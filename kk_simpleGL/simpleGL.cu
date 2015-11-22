@@ -16,13 +16,13 @@
 #include <cutil_math.h>
 
 
-static void HandleError( cudaError_t err, const char *file,  int line ) {
-    if (err != cudaSuccess) {
-            printf( "%s in %s at line %d\n", cudaGetErrorString( err ),  file, line );
-            exit( EXIT_FAILURE );
-    }
-}
-#define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
+// static void HandleError( cudaError_t err, const char *file,  int line ) {
+//     if (err != cudaSuccess) {
+//             printf( "%s in %s at line %d\n", cudaGetErrorString( err ),  file, line );
+//             exit( EXIT_FAILURE );
+//     }
+// }
+// #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 #define MAX(a,b) ((a > b) ? a : b)
 #define     DIM    512
 #define     DT    .1
@@ -130,31 +130,29 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
     float posX = (float)x/DIM;
     float posY = (float)y/DIM;
 
-    float m_y = (float)(mouse_y)/DIM;
+    float m_y = 1.0 - ((float)(mouse_y)/DIM);
 
     // if ( posX < .55 && posX > .45 && posY < .55 && posY > .45 ) {
-
-    if ( posX < .55 && posX > .45 && posY < m_y+.1 && posY > m_y-.1 ) {
+    if ( posX < .55 && posX > .45 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
       _chem[offset] = make_float4(1.,1.,1.,1.);
     }
-    else _chem[offset] = make_float4(0.,0.,0.,0.);
+    // else _chem[offset] = make_float4(0.,0.,0.,0.);
   }
 
   // constants
+  float xLength = 5.12;
+  float dt = 0.1;
+  float dx = (float)xLength/DIM;
+  float alpha = _difConst * dt / (dx*dx);
 
-  // float xLength = 5.12;
-  // float dt = .1;
-  // float dx = (float)xLength/DIM;
-  // float alpha = _difConst * dt / (dx*dx);
-
-  // int n1 = checkPosition((x+1) + y * blockDim.x * gridDim.x);
-  // int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
-  // int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
-  // int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
+  int n1 = checkPosition((x+1) + y * blockDim.x * gridDim.x);
+  int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
+  int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
+  int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
   // __syncthreads();
 
-  // _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
-  // _lap[offset] *= alpha;
+  _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
+  _lap[offset] *= alpha;
 
 }
 
@@ -164,6 +162,7 @@ __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
   int offset = x + y * blockDim.x * gridDim.x;
 
   _chem[offset] += _lap[offset];
+  _chem[offset].w = 1.0;
 
 }
 
@@ -176,12 +175,12 @@ __global__ void ReactA( float4 *_chemA, float4 *_chemB) {
   float4 A = _chemA[offset];
   float4 B = _chemB[offset];
 
-  float4 reaction = make_float4(-A.x * (B.x*B.x) + (F * (1-A.x)),
-                                -A.y * (B.y*B.y) + (F * (1-A.y)),
-                                -A.z * (B.z*B.z) + (F * (1-A.z)),
-                                -A.w * (B.w*B.w) + (F * (1-A.w))
+  float4 reaction = make_float4(-A.x * (B.x*B.x) + (F * (1.0-A.x)),
+                                -A.y * (B.y*B.y) + (F * (1.0-A.y)),
+                                -A.z * (B.z*B.z) + (F * (1.0-A.z)),
+                                1.0
                                 );
-  _chemA[offset] += DT * reaction;
+  _chemA[offset] += reaction * DT;
 }
 
 __global__ void ReactB( float4 *_chemA, float4 *_chemB) {
@@ -197,9 +196,9 @@ __global__ void ReactB( float4 *_chemA, float4 *_chemB) {
   float4 reaction = make_float4(A.x * (B.x*B.x) - (F+k)*B.x,
                                 A.y * (B.y*B.y) - (F+k)*B.y,
                                 A.z * (B.z*B.z) - (F+k)*B.z,
-                                A.w * (B.w*B.w) - (F+k)*B.w
+                                1.0
                                 );
-  _chemB[offset] += DT * reaction;
+  _chemB[offset] += reaction * DT;
 }
 
 ///////////////////////////////////////
@@ -211,7 +210,7 @@ static void draw_func( void ) {
 
   // cudaGraphicsMapResources( 1, &resource2, 0 );
   // cudaGraphicsMapResources( 1, &resourceL, 0 );
-  float4 *laplacian;
+  float4 *laplacian = 0;
   size_t  size;
   // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemA, &size, resource1));
   // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemB, &size, resource2));
@@ -224,12 +223,12 @@ static void draw_func( void ) {
   dim3    threads(16,16);
 
   Diffusion<<<grid,threads>>>( chemA, laplacian, dA, true, mouse_old_y );
-  // AddLaplacian<<<grid,threads>>>( chemA, laplacian );
+  AddLaplacian<<<grid,threads>>>( chemA, laplacian );
 
-  // checkCudaErrors(cudaFree(laplacian));
-  // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+  checkCudaErrors(cudaFree(laplacian));
+  checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
 
-  // Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true );
+  // Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_y );
   // AddLaplacian<<<grid,threads>>>( chemB, laplacian );
 
   // ReactA<<<grid,threads>>>( chemA, chemB );
@@ -240,8 +239,6 @@ static void draw_func( void ) {
   checkCudaErrors(cudaMemcpy(displayPtr, chemA, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
 
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
-  // checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource2, 0 ));
-  // checkCudaErrors(cudaGraphicsUnmapResources( 1, &resourceL, 0 ));
   checkCudaErrors(cudaFree(chemA));
   checkCudaErrors(cudaFree(chemB));
   checkCudaErrors(cudaFree(laplacian));
@@ -283,8 +280,8 @@ static void FreeResource( void ){
   // deletePBO(&bufferObj);
   // deletePBO(&bufferObj2);
   // deletePBO(&bufferObjL);
-  // checkCudaErrors(cudaFree(&chemA));
-  // checkCudaErrors(cudaFree(&laplacian));
+  chemA = 0;
+  chemB = 0;
   // deleteTexture(&textureID);
   // glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, 0 );
   // glDeleteTextures(1, &textureID);
@@ -311,7 +308,7 @@ static void key_func( unsigned char key, int x, int y ) {
 void passive(int x1, int y1) {
     mouse_old_x = x1; 
     mouse_old_y = y1;
-    glutPostRedisplay();
+    // glutPostRedisplay();
 
 }
 
@@ -330,7 +327,8 @@ int main(int argc, char *argv[]) {
   checkCudaErrors(cudaGLSetGLDevice( 0 ));
 
 
-  glClearColor(0.1f, 0.0f, 1.0f, 1.0f);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  displayPtr  = 0;
 
   // glGenBuffers( 1, &bufferObjL );
   // glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObjL );
