@@ -129,7 +129,7 @@ __global__ void RunOnce( float4 *_chem) {
 }
 
 
-__global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_y) {
+__global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_x, int mouse_y) {
   // map from threadIdx/BlockIdx to pixel position
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
@@ -140,10 +140,11 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
     float posX = (float)x/DIM;
     float posY = (float)y/DIM;
 
+    float m_x = ((float)(mouse_x)/DIM);
     float m_y = 1.0 - ((float)(mouse_y)/DIM);
 
     // if ( posX < .55 && posX > .45 && posY < .55 && posY > .45 ) {
-    if ( posX < .55 && posX > .45 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
+    if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
       _chem[offset] = make_float4(1.,1.,1.,1.);
     }
     // else _chem[offset] = make_float4(0.,0.,0.,0.);
@@ -232,13 +233,13 @@ static void draw_func( void ) {
     runOnce = true;
   }
 
-  Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_y );
+  Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
   AddLaplacian<<<grid,threads>>>( chemA, laplacian );
 
   // checkCudaErrors(cudaFree(laplacian));
   // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
 
-  Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_y );
+  Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
   AddLaplacian<<<grid,threads>>>( chemB, laplacian );
 
   React<<<grid,threads>>>( chemA, chemB );
