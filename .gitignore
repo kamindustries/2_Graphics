@@ -1,0 +1,16 @@
+/.project
+/bindlessTexture 
+/Mandelbrot     
+/simpleGL    
+/simpleGLES_screen  
+/simpleTexture3D  
+/volumeRender      
+/marchingCubes  
+/simpleGLES  
+/simpleGL_fbo       
+/volumeFiltering
+*/bin/
+*/*.xml
+*/doc/
+*/data/
+*/backup/
