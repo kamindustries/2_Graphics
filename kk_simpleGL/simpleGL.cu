@@ -39,6 +39,7 @@ int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
 unsigned int frameCount = 0;
 float4 *chemA, *chemB, *displayPtr;
+bool runOnce = false;
 
 // diffusion constants
 float dA = 0.0002;
@@ -119,6 +120,15 @@ __device__ int checkPosition(int _pos){
   else return _pos % dmax;
 }
 
+__global__ void RunOnce( float4 *_chem) {
+  int x = threadIdx.x + blockIdx.x * blockDim.x;
+  int y = threadIdx.y + blockIdx.y * blockDim.y;
+  int offset = x + y * blockDim.x * gridDim.x;
+
+  _chem[offset] = make_float4(0.,0.,0.,1.);
+}
+
+
 __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_y) {
   // map from threadIdx/BlockIdx to pixel position
   int x = threadIdx.x + blockIdx.x * blockDim.x;
@@ -140,16 +150,15 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
   }
 
   // constants
-  float xLength = 5.12;
-  float dt = 0.1;
+  float xLength = 6.12;
   float dx = (float)xLength/DIM;
-  float alpha = _difConst * dt / (dx*dx);
+  float alpha = _difConst * DT / (dx*dx);
 
   int n1 = checkPosition((x+1) + y * blockDim.x * gridDim.x);
   int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
   int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
   int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
-  // __syncthreads();
+  __syncthreads();
 
   _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
   _lap[offset] *= alpha;
@@ -166,24 +175,7 @@ __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
 
 }
 
-__global__ void ReactA( float4 *_chemA, float4 *_chemB) {
-  int x = threadIdx.x + blockIdx.x * blockDim.x;
-  int y = threadIdx.y + blockIdx.y * blockDim.y;
-  int offset = x + y * blockDim.x * gridDim.x;
-
-  float F = 0.05;
-  float4 A = _chemA[offset];
-  float4 B = _chemB[offset];
-
-  float4 reaction = make_float4(-A.x * (B.x*B.x) + (F * (1.0-A.x)),
-                                -A.y * (B.y*B.y) + (F * (1.0-A.y)),
-                                -A.z * (B.z*B.z) + (F * (1.0-A.z)),
-                                1.0
-                                );
-  _chemA[offset] += reaction * DT;
-}
-
-__global__ void ReactB( float4 *_chemA, float4 *_chemB) {
+__global__ void React( float4 *_chemA, float4 *_chemB) {
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
   int offset = x + y * blockDim.x * gridDim.x;
@@ -193,12 +185,23 @@ __global__ void ReactB( float4 *_chemA, float4 *_chemB) {
   float4 A = _chemA[offset];
   float4 B = _chemB[offset];
 
-  float4 reaction = make_float4(A.x * (B.x*B.x) - (F+k)*B.x,
+  float4 reactionA = make_float4(-A.x * (B.x*B.x) + (F * (1.0-A.x)),
+                                -A.y * (B.y*B.y) + (F * (1.0-A.y)),
+                                -A.z * (B.z*B.z) + (F * (1.0-A.z)),
+                                -A.w * (B.w*B.w) + (F * (1.0-A.w))
+                                );
+
+  float4 reactionB = make_float4(A.x * (B.x*B.x) - (F+k)*B.x,
                                 A.y * (B.y*B.y) - (F+k)*B.y,
                                 A.z * (B.z*B.z) - (F+k)*B.z,
-                                1.0
+                                A.w * (B.w*B.w) - (F+k)*B.w
                                 );
-  _chemB[offset] += reaction * DT;
+
+  _chemA[offset] += (DT * reactionA); //need parenthesis
+  _chemA[offset].w = 1.0;
+
+  _chemB[offset] += (DT * reactionB);
+  _chemB[offset].w = 1.0;
 }
 
 ///////////////////////////////////////
@@ -210,7 +213,7 @@ static void draw_func( void ) {
 
   // cudaGraphicsMapResources( 1, &resource2, 0 );
   // cudaGraphicsMapResources( 1, &resourceL, 0 );
-  float4 *laplacian = 0;
+  float4 *laplacian;
   size_t  size;
   // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemA, &size, resource1));
   // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemB, &size, resource2));
@@ -222,21 +225,27 @@ static void draw_func( void ) {
   dim3    grid(DIM/16,DIM/16);
   dim3    threads(16,16);
 
-  Diffusion<<<grid,threads>>>( chemA, laplacian, dA, true, mouse_old_y );
+  // load chem fields with color 0,0,0,1
+  if (runOnce == false){
+    RunOnce<<<grid,threads>>>(chemA);
+    RunOnce<<<grid,threads>>>(chemB);
+    runOnce = true;
+  }
+
+  Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_y );
   AddLaplacian<<<grid,threads>>>( chemA, laplacian );
 
-  checkCudaErrors(cudaFree(laplacian));
-  checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+  // checkCudaErrors(cudaFree(laplacian));
+  // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
 
-  // Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_y );
-  // AddLaplacian<<<grid,threads>>>( chemB, laplacian );
+  Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_y );
+  AddLaplacian<<<grid,threads>>>( chemB, laplacian );
 
-  // ReactA<<<grid,threads>>>( chemA, chemB );
-  // ReactB<<<grid,threads>>>( chemA, chemB );
+  React<<<grid,threads>>>( chemA, chemB );
 
   cudaGraphicsMapResources( 1, &resource1, 0 );
   checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
-  checkCudaErrors(cudaMemcpy(displayPtr, chemA, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+  checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
 
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
   checkCudaErrors(cudaFree(chemA));
