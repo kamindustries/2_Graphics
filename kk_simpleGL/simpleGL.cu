@@ -13,7 +13,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 
-#include <cutil_math.h>
+#include <helper_math.h>
 
 
 // static void HandleError( cudaError_t err, const char *file,  int line ) {
@@ -147,7 +147,6 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
     if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
       _chem[offset] = make_float4(1.,1.,1.,1.);
     }
-    // else _chem[offset] = make_float4(0.,0.,0.,0.);
   }
 
   // constants
@@ -206,52 +205,57 @@ __global__ void React( float4 *_chemA, float4 *_chemB) {
 }
 
 ///////////////////////////////////////
+// Simulate
+///////////////////////////////////////
+static void simulate( void ){
+
+  for (int i = 0; i < 10; i++){
+    float4 *laplacian;
+    size_t  size;
+    checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
+    checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
+    checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+
+    dim3    grid(DIM/16,DIM/16);
+    dim3    threads(16,16);
+
+    // *!* important
+    // load chem fields with color 0,0,0,1
+    if (runOnce == false){
+      RunOnce<<<grid,threads>>>(chemA);
+      RunOnce<<<grid,threads>>>(chemB);
+      runOnce = true;
+    }
+
+    Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
+    AddLaplacian<<<grid,threads>>>( chemA, laplacian );
+
+    // checkCudaErrors(cudaFree(laplacian));
+    // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+
+    Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
+    AddLaplacian<<<grid,threads>>>( chemB, laplacian );
+
+    React<<<grid,threads>>>( chemA, chemB );
+
+    cudaGraphicsMapResources( 1, &resource1, 0 );
+    checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
+    checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+
+    checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
+    checkCudaErrors(cudaFree(chemA));
+    checkCudaErrors(cudaFree(chemB));
+    checkCudaErrors(cudaFree(laplacian));
+  }
+}
+
+
+///////////////////////////////////////
 // Draw
 ///////////////////////////////////////
 static void draw_func( void ) {
 
   glClear(GL_COLOR_BUFFER_BIT);
-
-  // cudaGraphicsMapResources( 1, &resource2, 0 );
-  // cudaGraphicsMapResources( 1, &resourceL, 0 );
-  float4 *laplacian;
-  size_t  size;
-  // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemA, &size, resource1));
-  // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&chemB, &size, resource2));
-  // checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&laplacian, &size, resourceL));
-  checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
-  checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
-  checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
-
-  dim3    grid(DIM/16,DIM/16);
-  dim3    threads(16,16);
-
-  // load chem fields with color 0,0,0,1
-  if (runOnce == false){
-    RunOnce<<<grid,threads>>>(chemA);
-    RunOnce<<<grid,threads>>>(chemB);
-    runOnce = true;
-  }
-
-  Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
-  AddLaplacian<<<grid,threads>>>( chemA, laplacian );
-
-  // checkCudaErrors(cudaFree(laplacian));
-  // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
-
-  Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
-  AddLaplacian<<<grid,threads>>>( chemB, laplacian );
-
-  React<<<grid,threads>>>( chemA, chemB );
-
-  cudaGraphicsMapResources( 1, &resource1, 0 );
-  checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
-  checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-
-  checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
-  checkCudaErrors(cudaFree(chemA));
-  checkCudaErrors(cudaFree(chemB));
-  checkCudaErrors(cudaFree(laplacian));
 
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
@@ -273,7 +277,7 @@ static void draw_func( void ) {
   computeFPS();
   ttime += 0.0001;
   frameNum++;
-  glutPostRedisplay();
+  glutPostRedisplay(); // causes draw to loop forever
 }
 
 ///////////////////////////////////////
@@ -368,6 +372,7 @@ int main(int argc, char *argv[]) {
   glutCloseFunc( FreeResource );
   glutKeyboardFunc( key_func );
   glutPassiveMotionFunc(passive);
+  glutIdleFunc( simulate );
   glutDisplayFunc( draw_func );
   glutMainLoop();
 
