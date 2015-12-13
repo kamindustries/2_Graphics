@@ -24,7 +24,7 @@
 // }
 // #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 #define MAX(a,b) ((a > b) ? a : b)
-#define     DIM    512
+#define     DIM    128
 #define     DT    .1
 
 GLuint  bufferObj, bufferObj2;
@@ -130,10 +130,12 @@ __global__ void RunOnce( float4 *_chem) {
 
 
 __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_x, int mouse_y) {
+  if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+
   // map from threadIdx/BlockIdx to pixel position
-  int x = threadIdx.x + blockIdx.x * blockDim.x;
-  int y = threadIdx.y + blockIdx.y * blockDim.y;
-  int offset = x + y * blockDim.x * gridDim.x;
+  int x = threadIdx.x + (blockIdx.x * blockDim.x);
+  int y = threadIdx.y + (blockIdx.y * blockDim.y);
+  int offset = x + (y * blockDim.x * gridDim.x);
 
   // q1. draws a square
   if (_drawSquare){
@@ -143,14 +145,14 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
     float m_x = ((float)(mouse_x)/DIM);
     float m_y = 1.0 - ((float)(mouse_y)/DIM);
 
-    // if ( posX < .55 && posX > .45 && posY < .55 && posY > .45 ) {
-    if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
+    if ( posX < .55 && posX > .45 && posY < .55 && posY > .45 ) {
+    // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
       _chem[offset] = make_float4(1.,1.,1.,1.);
     }
   }
 
   // constants
-  float xLength = 6.12;
+  float xLength = (float)DIM/100.0;
   float dx = (float)xLength/DIM;
   float alpha = _difConst * DT / (dx*dx);
 
@@ -158,7 +160,7 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
   int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
   int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
   int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
-  __syncthreads();
+  // __syncthreads();
 
   _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
   _lap[offset] *= alpha;
@@ -166,6 +168,8 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
 }
 
 __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
+  if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
   int offset = x + y * blockDim.x * gridDim.x;
@@ -176,6 +180,8 @@ __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
 }
 
 __global__ void React( float4 *_chemA, float4 *_chemB) {
+  if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
   int offset = x + y * blockDim.x * gridDim.x;
@@ -218,6 +224,8 @@ static void simulate( void ){
 
     dim3    grid(DIM/16,DIM/16);
     dim3    threads(16,16);
+    // dim3    grid(12,12);
+    // dim3    threads(16,16);
 
     // *!* important
     // load chem fields with color 0,0,0,1
@@ -344,16 +352,7 @@ int main(int argc, char *argv[]) {
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
   displayPtr  = 0;
 
-  // glGenBuffers( 1, &bufferObjL );
-  // glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObjL );
-  // glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, DIM * DIM * 32, NULL, GL_DYNAMIC_DRAW_ARB );
-  // cudaGraphicsGLRegisterBuffer( &resourceL, bufferObjL, cudaGraphicsMapFlagsNone );
-
-  // glGenBuffers( 1, &bufferObj2 );
-  // glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj2 );
-  // glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, DIM * DIM * 32, NULL, GL_DYNAMIC_DRAW_ARB );
-  // cudaGraphicsGLRegisterBuffer( &resource2, bufferObj2, cudaGraphicsMapFlagsNone );
-
+  // on create openGL
   glGenBuffers( 1, &bufferObj );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj );
   glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, sizeof(float4) * DIM * DIM, NULL, GL_DYNAMIC_DRAW_ARB );
