@@ -24,7 +24,7 @@
 // }
 // #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 #define MAX(a,b) ((a > b) ? a : b)
-#define     DIM    128
+#define     DIM    256
 #define     DT    .1
 
 GLuint  bufferObj, bufferObj2;
@@ -51,6 +51,7 @@ StopWatchInterface *timer = NULL;
 
 // mouse controls
 int mouse_old_x, mouse_old_y;
+bool togSimulate = false;
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -152,7 +153,8 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
   }
 
   // constants
-  float xLength = (float)DIM/100.0;
+  // float xLength = (float)DIM/100.0;
+  float xLength = 2.56;
   float dx = (float)xLength/DIM;
   float alpha = _difConst * DT / (dx*dx);
 
@@ -215,45 +217,50 @@ __global__ void React( float4 *_chemA, float4 *_chemB) {
 ///////////////////////////////////////
 static void simulate( void ){
 
-  for (int i = 0; i < 10; i++){
-    float4 *laplacian;
-    size_t  size;
-    checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
-    checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
-    checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+  if (togSimulate) {
+    for (int i = 0; i < 10; i++){
+      float4 *laplacian;
+      size_t  size;
+      checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
+      checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
+      checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
 
-    dim3    grid(DIM/16,DIM/16);
-    dim3    threads(16,16);
-    // dim3    grid(12,12);
-    // dim3    threads(16,16);
+      dim3    grid(DIM/16,DIM/16);
+      dim3    threads(16,16);
+      // dim3    grid(12,12);
+      // dim3    threads(16,16);
 
-    // *!* important
-    // load chem fields with color 0,0,0,1
-    if (runOnce == false){
-      RunOnce<<<grid,threads>>>(chemA);
-      RunOnce<<<grid,threads>>>(chemB);
-      runOnce = true;
+      // *!* important
+      // load chem fields with color 0,0,0,1
+      if (runOnce == false){
+        RunOnce<<<grid,threads>>>(chemA);
+        RunOnce<<<grid,threads>>>(chemB);
+        runOnce = true;
+      }
+
+      Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
+      AddLaplacian<<<grid,threads>>>( chemA, laplacian );
+
+      // checkCudaErrors(cudaFree(laplacian));
+      // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+
+      Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
+      AddLaplacian<<<grid,threads>>>( chemB, laplacian );
+
+      React<<<grid,threads>>>( chemA, chemB );
+
+      cudaGraphicsMapResources( 1, &resource1, 0 );
+      checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
+      checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+
+      checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
+      checkCudaErrors(cudaFree(chemA));
+      checkCudaErrors(cudaFree(chemB));
+      checkCudaErrors(cudaFree(laplacian));
+      
+      frameNum++;
+      if (frameNum ==17610) togSimulate = false;
     }
-
-    Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
-    AddLaplacian<<<grid,threads>>>( chemA, laplacian );
-
-    // checkCudaErrors(cudaFree(laplacian));
-    // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
-
-    Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
-    AddLaplacian<<<grid,threads>>>( chemB, laplacian );
-
-    React<<<grid,threads>>>( chemA, chemB );
-
-    cudaGraphicsMapResources( 1, &resource1, 0 );
-    checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
-    checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-
-    checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
-    checkCudaErrors(cudaFree(chemA));
-    checkCudaErrors(cudaFree(chemB));
-    checkCudaErrors(cudaFree(laplacian));
   }
 }
 
@@ -284,8 +291,8 @@ static void draw_func( void ) {
 
   computeFPS();
   ttime += 0.0001;
-  frameNum++;
   glutPostRedisplay(); // causes draw to loop forever
+  if (frameNum % 10 == 0) printf("frame %d\n", frameNum);
 }
 
 ///////////////////////////////////////
@@ -321,6 +328,9 @@ static void key_func( unsigned char key, int x, int y ) {
         break;
     case 32:
         draw_func();
+        break;
+    case 'p':
+        togSimulate = !togSimulate;
         break;
     default:
         break;
