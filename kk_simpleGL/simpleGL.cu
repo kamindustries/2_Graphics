@@ -52,6 +52,11 @@ StopWatchInterface *timer = NULL;
 // mouse controls
 int mouse_old_x, mouse_old_y;
 bool togSimulate = false;
+int max_simulate = 0;
+int pause = 17500;
+
+bool writeCpy = false;
+bool writeDone = false;
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -67,6 +72,41 @@ struct sort_function
       return (left.y < right.y);
     }
 };
+
+///////////////////////////////////////
+// Write
+///////////////////////////////////////
+void write(int _frame_num) {
+
+
+//   writePtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+//   // checkCudaErrors (cudaMemcpy(write_ptr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+//   writeCpy = true;
+//   if (writeDone) {
+//   // char str[CHAR_BIT * sizeof(int) / 3 + 2];
+//   // sprintf(str, "%d", _frame_num);
+//   // FILE* file;
+//   // file = fopen("test.txt", "wb");
+
+//   int totalCells = DIM * DIM;
+//   double* dataDouble = new double[totalCells * 3];
+//   for (int i = 0; i < 5; i++) {
+//     // dataDouble[3 * i] = (double)displayPtr[0].x;
+//     // printf("chemB: %f", write_ptr[i].x);
+//     // dataDouble[3 * i + 1] = chemB[i].y;
+//     // dataDouble[3 * i + 2] = chemB[i].z;
+//   }
+
+//   // for (int i = 0; i < totalCells * 3; i++) {
+//   //   fprintf(file, "%f\n", dataDouble[i]);
+//   // }
+//   // delete[] dataDouble;
+//   // fclose(file);
+
+//   writeDone = false;
+//   printf("Wrote file!\n");
+// }
+}
 
 ///////////////////////////////////////
 // Compute FPS
@@ -129,6 +169,25 @@ __global__ void RunOnce( float4 *_chem) {
   _chem[offset] = make_float4(0.,0.,0.,1.);
 }
 
+__global__ void DrawSquare( float4 *_chem, bool _drawSquare) {
+  if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+
+  // map from threadIdx/BlockIdx to pixel position
+  int x = threadIdx.x + (blockIdx.x * blockDim.x);
+  int y = threadIdx.y + (blockIdx.y * blockDim.y);
+  int offset = x + (y * blockDim.x * gridDim.x);
+
+  // q1. draws a square
+  if (_drawSquare){
+    float posX = (float)x/DIM;
+    float posY = (float)y/DIM;
+    if ( posX < .75 && posX > .45 && posY < .55 && posY > .45 ) {
+    // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
+      _chem[offset] = make_float4(1.,1.,1.,1.);
+    }
+  }
+
+}
 
 __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_x, int mouse_y) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
@@ -217,10 +276,10 @@ __global__ void React( float4 *_chemA, float4 *_chemB) {
 ///////////////////////////////////////
 static void simulate( void ){
 
-  if (togSimulate) {
     for (int i = 0; i < 10; i++){
       float4 *laplacian;
       size_t  size;
+
       checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
       checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
       checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
@@ -238,30 +297,58 @@ static void simulate( void ){
         runOnce = true;
       }
 
+      // DrawSquare<<<grid,threads>>>( chemB, true );
+
       Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
       AddLaplacian<<<grid,threads>>>( chemA, laplacian );
-
-      // checkCudaErrors(cudaFree(laplacian));
-      // checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
 
       Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
       AddLaplacian<<<grid,threads>>>( chemB, laplacian );
 
       React<<<grid,threads>>>( chemA, chemB );
 
+
       cudaGraphicsMapResources( 1, &resource1, 0 );
       checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
-      checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+      checkCudaErrors (cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+    
+      if (frameNum == 1000 || frameNum == 9000 || frameNum == 17600) writeCpy = true;
 
+      if (writeCpy) {
+        float4* writePtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+        checkCudaErrors (cudaMemcpy(writePtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+        
+        char str[CHAR_BIT * sizeof(int) / 3 + 2];
+        sprintf(str, "data/cuda_x%d.txt", frameNum);
+        FILE* file;
+        file = fopen(str, "wb");
+
+        int totalCells = DIM * DIM;
+        // double* dataDouble = new double[totalCells * 3];
+        for (int i = 0; i < totalCells; i++) {
+          fprintf(file, "%f\n", (double)writePtr[i].x);
+          fprintf(file, "%f\n", (double)writePtr[i].y);
+          fprintf(file, "%f\n", (double)writePtr[i].z);
+        }
+
+        fclose(file);
+
+        writeCpy = false;
+        printf("Wrote file!\n");
+      }
+      
       checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
       checkCudaErrors(cudaFree(chemA));
       checkCudaErrors(cudaFree(chemB));
       checkCudaErrors(cudaFree(laplacian));
       
       frameNum++;
-      if (frameNum ==17610) togSimulate = false;
+      if (frameNum == pause) togSimulate = false;
     }
-  }
+
+
+    // printf("chem b: %f", displayPtr[0].x);
+    // printf("\r");
 }
 
 
@@ -269,6 +356,10 @@ static void simulate( void ){
 // Draw
 ///////////////////////////////////////
 static void draw_func( void ) {
+
+  if (togSimulate) {
+    simulate();
+  }
 
   glClear(GL_COLOR_BUFFER_BIT);
 
@@ -292,7 +383,10 @@ static void draw_func( void ) {
   computeFPS();
   ttime += 0.0001;
   glutPostRedisplay(); // causes draw to loop forever
-  if (frameNum % 10 == 0) printf("frame %d\n", frameNum);
+  
+  // printf("frame %d", frameNum);
+  // printf("\r");
+
 }
 
 ///////////////////////////////////////
@@ -332,6 +426,13 @@ static void key_func( unsigned char key, int x, int y ) {
     case 'p':
         togSimulate = !togSimulate;
         break;
+    case '=':
+        simulate();
+        draw_func();
+        break;
+    case '.':
+        writeCpy = true;
+        break;
     default:
         break;
   }
@@ -349,7 +450,6 @@ void passive(int x1, int y1) {
 ///////////////////////////////////////////////////////////////////////////////
 int main(int argc, char *argv[]) {
 
-
   // initialize
   glutInit( &argc, argv );
   glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
@@ -360,7 +460,7 @@ int main(int argc, char *argv[]) {
 
 
   glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  displayPtr  = 0;
+  displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
 
   // on create openGL
   glGenBuffers( 1, &bufferObj );
@@ -381,7 +481,7 @@ int main(int argc, char *argv[]) {
   glutCloseFunc( FreeResource );
   glutKeyboardFunc( key_func );
   glutPassiveMotionFunc(passive);
-  glutIdleFunc( simulate );
+  // glutIdleFunc( simulate );
   glutDisplayFunc( draw_func );
   glutMainLoop();
 
