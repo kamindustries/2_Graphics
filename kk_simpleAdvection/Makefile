@@ -204,9 +204,12 @@ endif
 
 # Gencode arguments
 ifeq ($(TARGET_ARCH),armv7l)
-SMS ?= 20 30 32 35 37 50 52
+# CUDA compute capability; add as necessary for GPU targets
+# SMS ?= 20 30 32 35 37 50 52
+SMS ?= 30
 else
-SMS ?= 20 30 35 37 50 52
+# SMS ?= 20 30 35 37 50 52
+SMS ?= 30
 endif
 
 ifeq ($(SMS),)

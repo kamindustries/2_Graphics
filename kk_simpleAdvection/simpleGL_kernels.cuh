@@ -3,7 +3,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #include <GL/glew.h>
-#include <GL/freeglut.h>
+// #include <GL/freeglut.h>
+#include <GL/glut.h>
 #include <cuda_gl_interop.h>
 #include <timer.h>               // timing functions
 #include <helper_functions.h>    // includes cuda.h and cuda_runtime_api.h
@@ -13,7 +14,7 @@
 #include <thrust/sort.h>
 #include <helper_math.h>
 
-#define     DIM    256
+#define     DIM    512
 #define     N    DIM-2
 
 // Get 1d index from 2d coords
@@ -25,6 +26,12 @@ __device__ int IX( int x, int y) {
   if (y < 0) y = DIM-1;
   return x + (y * blockDim.x * gridDim.x);
 }
+
+__device__ int IX2(int i, int j) {
+  return ((i)+(N+2)*(j));
+}
+
+
 
 __device__ int getX() {
   return threadIdx.x + (blockIdx.x * blockDim.x);
@@ -69,7 +76,7 @@ __global__ void DrawSquare( float *field ) {
   float posX = (float)x/DIM;
   float posY = (float)y/DIM;
   if ( posX < .75 && posX > .45 && posY < .51 && posY > .48 ) {
-    field[id] = 1.0;
+    field[id] = 100.0;
   }
 }
 
@@ -89,16 +96,24 @@ __global__ void ClearArray( float *field, float value ) {
   field[id] = value;
 }
 
-__global__ void GetFromUI ( float * field, int x_coord, int y_coord, float value, float dt ) {
+__global__ void GetFromUI ( float * field, int x_coord, int y_coord, float value ) {
   int x = getX();
   int y = getY();
   int id = IX(x,y);
 
-  if (x>x_coord-5 && x<x_coord+5 && y>y_coord-5 && y<y_coord+5){
+  if (x>x_coord-2 && x<x_coord+2 && y>y_coord-2 && y<y_coord+2){
+  // if (x == x_coord && y==y_coord){
     field[id] = value;
   }
   else return;
+}
 
+__global__ void WeirdThing ( float * d, float * u, float * v ) {
+  int x = getX();
+  int y = getY();
+  int id = IX(x,y);
+
+  u[id] = v[id] = d[id] = 0.0;
 }
 
 __global__ void InitVelocity ( float * field ) {
@@ -142,43 +157,44 @@ __global__ void LinSolve( int b, float *field, float *field0, float a, float c) 
   int y = getY();
   int id = IX(x,y);
 
-  if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
-    field[id] = (field0[id] + a*(field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)])) / c;
-  }
+  // if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
+    field[id] = (float)(field0[id] + ((float)a*(field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]))) / c;
+  // }
   // set_bnd( b, x, y, field );
 }
 
 __global__ void Advect ( int b, float *field, float * field0, float *u, float *v, float dt ) {
-  int x = getX();
-  int y = getY();
-  int id = IX(x,y);
+  int i = getX();
+  int j = getY();
+  int id = IX(i,j);
 
   int i0, j0, i1, j1;
-  float x_vel, y_vel, s0, t0, s1, t1, dt0;
-  dt0 = dt*float(N);
+  float x, y, s0, t0, s1, t1, dt0;
 
-  if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
-    x_vel = x - dt0 * u[id];
-    y_vel = y - dt0 * v[id];
+  dt0 = (float)dt*float(N);
 
-    if (x_vel < 0.5) x_vel = 0.5;
-    if (x_vel > N+0.5) x_vel = N+0.5;
-    i0 = int(x_vel);
+  // if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
+    x = (float)i - dt0 * u[id];
+    y = (float)j - dt0 * v[id];
+
+    if (x < 0.5f) x = 0.5f;
+    if (x > (float)N+0.5f) x = (float)N+0.5f;
+    i0 = (int)x;
     i1 = i0+1;
 
-    if (y_vel < 0.5) y_vel = 0.5;
-    if (y_vel > N+0.5) y_vel = N+0.5;
-    j0 = int(y_vel);
+    if (y < 0.5f) y = 0.5f;
+    if (y > (float)N+0.5f) y = (float)N+0.5f;
+    j0 = (int)y;
     j1 = j0+1;
 
-    s1 = x_vel-i0;
-    s0 = 1-s1;
-    t1 = y_vel-j0;
-    t0 = 1-t1;
+    s1 = (float)x-i0;
+    s0 = (float)1-s1;
+    t1 = (float)y-j0;
+    t0 = (float)1-t1;
 
-    field[id] = s0*((t0*field0[IX(i0,j0)]) + (t1*field0[IX(i0,j1)])) +
-                s1*((t0*field0[IX(i1,j0)]) + (t1*field0[IX(i1,j1)]));
-  }
+    field[id] = (float)s0*(t0*field0[IX(i0,j0)] + t1*field0[IX(i0,j1)])+
+			 				         s1*(t0*field0[IX(i1,j0)] + t1*field0[IX(i1,j1)]);
+  // }
   // set_bnd(b, x, y, field );
 }
 
@@ -212,8 +228,8 @@ __global__ void ProjectFinish ( float * u, float * v, float * p, float * div ) {
 __global__ void MakeColor( float *data, float4 *_toDisplay) {
   int x = getX();
   int y = getY();
-  int offset = x + y * blockDim.x * gridDim.x;
+  int id = IX(x,y);
 
-  float Cd = data[offset];
-  _toDisplay[offset] = make_float4(Cd, Cd, Cd, 1.0);
+  float Cd = data[id];
+  _toDisplay[id] = make_float4(Cd, Cd, Cd, 1.0);
 }
