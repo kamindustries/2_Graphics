@@ -6,6 +6,7 @@
 
 #define MAX(a,b) ((a > b) ? a : b)
 #define SWAP(x0,x) {float *tmp=x0;x0=x;x=tmp;}
+#define REFRESH_DELAY     10 //ms
 
 dim3 grid, threads;
 
@@ -13,25 +14,22 @@ int size = 0;
 int win_x = 512;
 int win_y = 512;
 float dt = 0.1;
-float diff = 0.;
-float visc = 0.;
+float diff = 0.0f;
+float visc = 0.0f;
 float force = 5.0;
 float source_density = 100.0;
 
 GLuint  bufferObj, bufferObj2;
 GLuint  textureID;
-// cudaGraphicsResource_t resource[2];
 cudaGraphicsResource_t resource1;
-cudaGraphicsResource_t resource2;
-// float ttime = 0.0f;
-// float avgFPS = 0.0f;
-// int fpsCount = 0;        // FPS count for averaging
-// int fpsLimit = 1;        // FPS limit for sampling
+
+float avgFPS = 0.0f;
+int fpsCount = 0;        // FPS count for averaging
+int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
-unsigned int frameCount = 0;
+StopWatchInterface *timer = NULL;
 
 float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
-float *dens_cpu;
 float4 *displayPtr, *toDisplay;
 
 bool hasRunOnce = false;
@@ -57,7 +55,9 @@ void initVariables() {
 
   size = (N+2)*(N+2);
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-  dens_cpu = (float*)malloc(sizeof(float)*size);
+
+  // Create the CUTIL timer
+  sdkCreateTimer(&timer);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -116,6 +116,23 @@ void initArrays() {
   ClearArray<<<grid,threads>>>(toDisplay, 0.0);
 }
 
+void computeFPS() {
+  frameNum++;
+  fpsCount++;
+
+  if (fpsCount == fpsLimit) {
+    avgFPS = 1.f / (sdkGetAverageTimerValue(&timer) / 1000.f);
+    fpsCount = 0;
+    fpsLimit = (int)MAX(avgFPS, 1.f);
+
+    sdkResetTimer(&timer);
+  }
+
+  char fps[256];
+  sprintf(fps, "Cuda GL Interop: %3.1f fps (Max 100Hz)", avgFPS);
+  glutSetWindowTitle(fps);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // Sim steps
 ///////////////////////////////////////////////////////////////////////////////
@@ -123,7 +140,11 @@ void get_from_UI(float *d, float *u, float *v) {
 
   int i, j = (N+2)*(N+2);
 
-  WeirdThing<<<grid,threads>>>(d, u, v); // rename this
+  // which is faster?
+  // ClearThreeArrays<<<grid,threads>>>(d, u, v);
+  ClearArray<<<grid,threads>>>(d, 0.0);
+  ClearArray<<<grid,threads>>>(u, 0.0);
+  ClearArray<<<grid,threads>>>(v, 0.0);
 
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
@@ -136,8 +157,6 @@ void get_from_UI(float *d, float *u, float *v) {
   if (frameNum % 50 == 0) printf("%f, %f\n", x_diff, y_diff);
 
   if ( i<1 || i>N || j<1 || j>N ) return;
-
-  // DrawSquare<<<grid,threads>>>(dens_prev);
 
   if ( mouse_down[0] ) {
     GetFromUI<<<grid,threads>>>(u, i, j, x_diff * force);
@@ -157,9 +176,14 @@ void get_from_UI(float *d, float *u, float *v) {
 void diffuse_step(int b, float *field, float *field0, float diff, float dt){
   float a=dt*diff*float(N)*float(N); // needed to float(N) to get it to work...
   for (int k = 0; k < 20; k++) {
-    LinSolve<<<grid,threads>>>( b, field, field0, a, (float)1.0+(4.0*a) );
-    SetBoundary<<<grid,threads>>>(0, field);
+    LinSolve<<<grid,threads>>>( field, field0, a, (float)1.0+(4.0*a) );
+    SetBoundary<<<grid,threads>>>( b, field );
   }
+}
+
+void advect_step ( int b, float *field, float *field0, float *u, float *v, float dt ){
+  Advect<<<grid,threads>>>( field, field0, u, v, dt );
+  SetBoundary<<<grid,threads>>>( b, field );
 }
 
 void proj_step( float *u, float *v, float *p, float *div) {
@@ -167,7 +191,7 @@ void proj_step( float *u, float *v, float *p, float *div) {
     SetBoundary<<<grid,threads>>>(0, div);
     SetBoundary<<<grid,threads>>>(0, p);
     for (int k = 0; k < 20; k++) {
-      LinSolve<<<grid,threads>>>( 0, p, div, 1.0, 4.0 );
+      LinSolve<<<grid,threads>>>( p, div, 1.0, 4.0 );
       SetBoundary<<<grid,threads>>>(0, p);
     }
     ProjectFinish<<<grid,threads>>>( u, v, p, div );
@@ -175,18 +199,17 @@ void proj_step( float *u, float *v, float *p, float *div) {
     SetBoundary<<<grid,threads>>>(2, v);
 }
 
-void dens_step ( float * x, float * x0, float * u, float * v, float diff, float dt )
+void dens_step ( float * field, float * field0, float *u, float *v, float diff, float dt )
 {
-  AddSource<<<grid,threads>>>( x, x0, dt );
-  SWAP ( x0, x );
-  diffuse_step( 0, x, x0, diff, dt);
+  AddSource<<<grid,threads>>>( field, field0, dt );
+  SWAP ( field0, field );
+  diffuse_step( 0, field, field0, diff, dt);
 
-  SWAP ( x0, x );
-  Advect<<<grid,threads>>>( 0, x, x0, u, v, dt );
-  SetBoundary<<<grid,threads>>>(0, x);
+  SWAP ( field0, field );
+  advect_step(0, field, field0, u, v, dt);
 }
 
-void vel_step ( float * u, float * v, float * u0, float * v0, float visc, float dt ) {
+void vel_step ( float *u, float *v, float *u0, float *v0, float visc, float dt ) {
   AddSource<<<grid,threads>>>( u, u0, dt );
   AddSource<<<grid,threads>>>( v, v0, dt );
 
@@ -197,8 +220,10 @@ void vel_step ( float * u, float * v, float * u0, float * v0, float visc, float 
 
   SWAP ( u0, u );
   SWAP ( v0, v );
-  Advect<<<grid,threads>>>( 1, u, u0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(1, u);
-  Advect<<<grid,threads>>>( 2, v, v0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(2, v);
+  advect_step(1, u, u0, u0, v0, dt);
+  advect_step(2, v, v0, u0, v0, dt);
+  // Advect<<<grid,threads>>>( 1, u, u0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(1, u);
+  // Advect<<<grid,threads>>>( 2, v, v0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(2, v);
 
   proj_step( u, v, u0, v0);
 }
@@ -207,6 +232,7 @@ void vel_step ( float * u, float * v, float * u0, float * v0, float visc, float 
 // Simulate
 ///////////////////////////////////////////////////////////////////////////////
 static void simulate( void ){
+  sdkStartTimer(&timer);
 
   // *!* important
   if (!hasRunOnce) {
@@ -227,22 +253,18 @@ static void simulate( void ){
   checkCudaErrors(cudaMemcpy(displayPtr, toDisplay, sizeof(float4)*size, cudaMemcpyDeviceToHost ));
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
 
-  checkCudaErrors(cudaMemcpy(dens_cpu, dens, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-
-  frameNum++;
+  sdkStopTimer(&timer);
+  computeFPS();
   glutPostRedisplay();
 }
 
 
-
-static void pre_display ( void )
-{
-	glViewport ( 0, 0, win_x, win_y );
-	glMatrixMode ( GL_PROJECTION );
-	glLoadIdentity ();
-	gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
-	glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
-	glClear ( GL_COLOR_BUFFER_BIT );
+static void pre_display ( void ) {
+  glViewport ( 0, 0, win_x, win_y );
+  glMatrixMode ( GL_PROJECTION );
+  glLoadIdentity ();
+  gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
+  glClear(GL_COLOR_BUFFER_BIT);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -250,12 +272,8 @@ static void pre_display ( void )
 ///////////////////////////////////////////////////////////////////////////////
 static void draw_func( void ) {
 
-  glViewport ( 0, 0, win_x, win_y );
-  glMatrixMode ( GL_PROJECTION );
-  glLoadIdentity ();
-  gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
+  pre_display ();
 
-  glClear(GL_COLOR_BUFFER_BIT);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
@@ -270,32 +288,6 @@ static void draw_func( void ) {
   glTexCoord2f(1.0f,1.0f);
   glVertex3f(1.0,1.0,0.0);
   glEnd();
-
-  // pre_display ();
-
-  // int i, j;
-  // float x, y, h, d00, d01, d10, d11;
-  //
-  // h = 1.0f/float(N);
-  //
-  // glBegin ( GL_QUADS );
-  //   for ( i=0 ; i<=N ; i++ ) {
-  //     x = (float)(i-0.5f)*h;
-  //     for ( j=0 ; j<=N ; j++ ) {
-  //       y = (float)(j-0.5f)*h;
-  //
-  //       d00 = dens_cpu[ID(i,j)];
-  //       d01 = dens_cpu[ID(i,j+1)];
-  //       d10 = dens_cpu[ID(i+1,j)];
-  //       d11 = dens_cpu[ID(i+1,j+1)];
-  //
-  //       glColor4f ( d00, d00, d00, 1.0 ); glVertex2f ( x, y );
-  //       glColor4f ( d10, d10, d10, 1.0 ); glVertex2f ( x+h, y );
-  //       glColor4f ( d11, d11, d11, 1.0 ); glVertex2f ( x+h, y+h );
-  //       glColor4f ( d01, d01, d01, 1.0 ); glVertex2f ( x, y+h );
-  //     }
-  //   }
-  // glEnd ();
 
   glutSwapBuffers();
 
@@ -336,7 +328,13 @@ static void FreeResource( void ){
   // checkCudaErrors(cudaFree(dens_prev));
   // checkCudaErrors(cudaFree(source));
   // checkCudaErrors(cudaFree(toDisplay));
+  sdkDeleteTimer(&timer);
   glDeleteBuffers(1, &bufferObj);
+}
+
+void timerEvent(int value) {
+  glutPostRedisplay();
+  glutTimerFunc(REFRESH_DELAY, timerEvent,0);
 }
 
 ///////////////////////////////////////
@@ -348,6 +346,9 @@ static void key_func( unsigned char key, int x, int y ) {
     case 'Q':
         FreeResource();
         exit(0);
+        break;
+    case 'c':
+        initArrays();
         break;
     case 32:
         draw_func();
@@ -363,22 +364,22 @@ static void key_func( unsigned char key, int x, int y ) {
         writeCpy = true;
         break;
     case ']':
-        diff += .1;
-        if (diff >= 1.) diff = 1.;
+        diff += 0.000001f;
+        // if (diff >= 1.) diff = 1.;
         printf("Diff: %f\n", diff);
         break;
     case '[':
-        diff -= .1;
+        diff -= 0.000001f;
         if (diff <= 0.) diff = 0.;
         printf("Diff: %f\n", diff);
         break;
     case '0':
-        visc += .1;
-        if (visc >= 1.) visc = 1.;
+        visc += 0.000001f;
+        // if (visc >= 1.) visc = 1.;
         printf("Visc: %f\n", visc);
         break;
     case '9':
-        visc -= .1;
+        visc -= 0.000001f;
         if (visc <= 0.) visc = 0.;
         printf("Visc: %f\n", visc);
         break;
@@ -395,8 +396,7 @@ void motion_func(int x, int y) {
   mouse_y = y;
 }
 
-void mouse_func ( int button, int state, int x, int y )
-{
+void mouse_func ( int button, int state, int x, int y ) {
 	mouse_x_old = mouse_x = x;
 	mouse_y_old = mouse_x = y;
 
@@ -432,6 +432,7 @@ int main(int argc, char *argv[]) {
   glutIdleFunc( simulate );
   glutReshapeFunc ( reshape_func );
   glutDisplayFunc( draw_func );
+  glutTimerFunc(REFRESH_DELAY, timerEvent,0);
   glutMainLoop();
 
   cudaDeviceReset();

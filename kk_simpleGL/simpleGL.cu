@@ -9,11 +9,11 @@
 #include <helper_functions.h>    // includes cuda.h and cuda_runtime_api.h
 #include <helper_cuda.h>         // helper functions for CUDA error check
 #include <helper_cuda_gl.h>
-
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
-
 #include <helper_math.h>
+#include "lodepng.h"
+#include "writePNG.h"
 
 
 // static void HandleError( cudaError_t err, const char *file,  int line ) {
@@ -39,7 +39,7 @@ int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
 unsigned int frameCount = 0;
 float4 *chemA, *chemB, *displayPtr;
-bool runOnce = false;
+bool runOnce = true;
 
 // diffusion constants
 float dA = 0.0002;
@@ -53,7 +53,7 @@ StopWatchInterface *timer = NULL;
 int mouse_old_x, mouse_old_y;
 bool togSimulate = false;
 int max_simulate = 0;
-int pause = 17500;
+// int pause = 17500;
 
 bool writeCpy = false;
 bool writeDone = false;
@@ -62,50 +62,31 @@ bool writeDone = false;
 ///////////////////////////////////////////////////////////////////////////////
 // Functions
 ///////////////////////////////////////
-// Sort
-///////////////////////////////////////
-struct sort_function
-{
-  __host__ __device__
-    bool operator()(uchar4 left, uchar4 right) const
-    {
-      return (left.y < right.y);
-    }
-};
-
-///////////////////////////////////////
 // Write
 ///////////////////////////////////////
-void write(int _frame_num) {
+void write(const char* _filename, float4* _img) {
+    FILE* file;
+    file = fopen(_filename, "wb");
 
+    int totalCells = DIM * DIM;
+    // double* dataDouble = new double[totalCells * 3];
+    for (int i = 0; i < totalCells; i++) {
+      fprintf(file, "%f\n", _img[i].x);
+      fprintf(file, "%f\n", _img[i].y);
+      fprintf(file, "%f\n", _img[i].z);
+    }
 
-//   writePtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-//   // checkCudaErrors (cudaMemcpy(write_ptr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-//   writeCpy = true;
-//   if (writeDone) {
-//   // char str[CHAR_BIT * sizeof(int) / 3 + 2];
-//   // sprintf(str, "%d", _frame_num);
-//   // FILE* file;
-//   // file = fopen("test.txt", "wb");
+    fclose(file);
 
-//   int totalCells = DIM * DIM;
-//   double* dataDouble = new double[totalCells * 3];
-//   for (int i = 0; i < 5; i++) {
-//     // dataDouble[3 * i] = (double)displayPtr[0].x;
-//     // printf("chemB: %f", write_ptr[i].x);
-//     // dataDouble[3 * i + 1] = chemB[i].y;
-//     // dataDouble[3 * i + 2] = chemB[i].z;
-//   }
+    writeCpy = false;
+    printf("Wrote file!\n");
+}
 
-//   // for (int i = 0; i < totalCells * 3; i++) {
-//   //   fprintf(file, "%f\n", dataDouble[i]);
-//   // }
-//   // delete[] dataDouble;
-//   // fclose(file);
-
-//   writeDone = false;
-//   printf("Wrote file!\n");
-// }
+void encodeOneStep(const char* _filename, const unsigned char* image, unsigned width, unsigned height) {
+  /*Encode the image*/
+  unsigned error = lodepng_encode32_file(_filename, image, width, height);
+  /*if there's an error, display it*/
+  if(error) printf("error %u: %s\n", error, lodepng_error_text(error));
 }
 
 ///////////////////////////////////////
@@ -144,7 +125,6 @@ void deleteTexture(GLuint *tex)
 {
     glDeleteTextures(1, tex);
     SDK_CHECK_ERROR_GL();
-
     *tex = 0;
 }
 
@@ -155,8 +135,10 @@ void deleteTexture(GLuint *tex)
 __device__ int checkPosition(int _pos){
   int dmax = DIM*DIM;
   if (_pos < 0){
-    _pos = dmax+_pos;
-    return _pos % dmax;
+    // _pos = dmax+_pos;
+    _pos += DIM;
+    // return _pos % dmax;
+    return _pos;
   }
   else return _pos % dmax;
 }
@@ -169,7 +151,7 @@ __global__ void RunOnce( float4 *_chem) {
   _chem[offset] = make_float4(0.,0.,0.,1.);
 }
 
-__global__ void DrawSquare( float4 *_chem, bool _drawSquare) {
+__global__ void DrawSquare( float4 *_chem ) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   // map from threadIdx/BlockIdx to pixel position
@@ -178,18 +160,18 @@ __global__ void DrawSquare( float4 *_chem, bool _drawSquare) {
   int offset = x + (y * blockDim.x * gridDim.x);
 
   // q1. draws a square
-  if (_drawSquare){
-    float posX = (float)x/DIM;
-    float posY = (float)y/DIM;
-    if ( posX < .75 && posX > .45 && posY < .55 && posY > .45 ) {
-    // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
-      _chem[offset] = make_float4(1.,1.,1.,1.);
-    }
+  float posX = (float)x/DIM;
+  float posY = (float)y/DIM;
+  // if ( x < 140 && x > 116 && y < 140 && y > 116 ) {
+  if ( x < 200 && x > 116 && y < 140 && y > 30 ) {
+  // if ( posX < .75 && posX > .45 && posY < .55 && posY > .45 ) {
+  // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
+    _chem[offset] = make_float4(1.,1.,1.,1.);
   }
 
 }
 
-__global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _drawSquare, int mouse_x, int mouse_y) {
+__global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, int mouse_x, int mouse_y) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   // map from threadIdx/BlockIdx to pixel position
@@ -197,30 +179,46 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, bool _d
   int y = threadIdx.y + (blockIdx.y * blockDim.y);
   int offset = x + (y * blockDim.x * gridDim.x);
 
-  // q1. draws a square
-  if (_drawSquare){
-    float posX = (float)x/DIM;
-    float posY = (float)y/DIM;
-
-    float m_x = ((float)(mouse_x)/DIM);
-    float m_y = 1.0 - ((float)(mouse_y)/DIM);
-
-    if ( posX < .55 && posX > .45 && posY < .55 && posY > .45 ) {
-    // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
-      _chem[offset] = make_float4(1.,1.,1.,1.);
-    }
-  }
-
   // constants
   // float xLength = (float)DIM/100.0;
   float xLength = 2.56;
-  float dx = (float)xLength/DIM;
+  // float dx = (float)xLength/DIM;
+  float dx = 0.01;
   float alpha = _difConst * DT / (dx*dx);
 
-  int n1 = checkPosition((x+1) + y * blockDim.x * gridDim.x);
-  int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
-  int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
-  int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
+  // int n1 = (x+1)%DIM;
+  // int n2 = (x-1)%DIM;
+  // int n3 = (y+1)%DIM;
+  // int n4 = (y-1)%DIM;
+
+  // if (n2 < 0) n2 += DIM;
+  // if (n4 < 0) n4 += DIM;
+
+  // n1 = ((n1 + y * blockDim.x * gridDim.x)) % (DIM*DIM);
+  // n2 = ((n2 + y * blockDim.x * gridDim.x)) % (DIM*DIM);
+  // n3 = ((x + n3 * blockDim.x * gridDim.x)) % (DIM*DIM);
+  // n4 = ((x + n4 * blockDim.x * gridDim.x)) % (DIM*DIM);
+  // if (n1 > (y*DIM)+DIM) n1 -= DIM;
+
+  int n1 = offset + 1;
+  int n2 = offset - 1;
+  int n3 = offset + DIM;
+  int n4 = offset - DIM;
+
+  if (n1 > ((DIM-1) + (y * blockDim.x * gridDim.x))) n1 -= DIM;
+  if (n1 >= DIM*DIM) n1 -= DIM;
+
+  if (n2 < (0 + (y * blockDim.x * gridDim.x))) n2 = ((DIM-1) + (y * blockDim.x * gridDim.x));
+  if (n2 < 0) n2 += DIM;
+
+  if (n3 >= DIM*DIM) n3 = x; 
+  
+  if (n4 < 0) n4 = (DIM*DIM) - DIM + x; 
+
+  // int n1 = checkPosition((x+1) + y * blockDim.x * gridDim.x);
+  // int n2 = checkPosition((x-1) + y * blockDim.x * gridDim.x);
+  // int n3 = checkPosition(x + (y+1) * blockDim.x * gridDim.x);
+  // int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
   // __syncthreads();
 
   _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
@@ -240,8 +238,8 @@ __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
 
 }
 
-__global__ void React( float4 *_chemA, float4 *_chemB) {
-  if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+__global__ void React( float4 *_chemA, float4 *_chemB, float4 *_rA, float4 *_rB) {
+  // if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
@@ -264,10 +262,27 @@ __global__ void React( float4 *_chemA, float4 *_chemB) {
                                 A.w * (B.w*B.w) - (F+k)*B.w
                                 );
 
-  _chemA[offset] += (DT * reactionA); //need parenthesis
+  _rA[offset] = reactionA * .1;
+  _rB[offset] = reactionB * .1;
+
+  // _chemA[offset] += (DT * reactionA); //need parenthesis
+  // _chemA[offset].w = 1.0;
+
+  // _chemB[offset] += (DT * reactionB);
+  // _chemB[offset].w = 1.0;
+}
+
+__global__ void AddReaction( float4 *_chemA, float4 *_chemB, float4 *_rA, float4 *_rB) {
+  // if (threadIdx.x > DIM || threadIdx.y > DIM) return;
+
+  int x = threadIdx.x + blockIdx.x * blockDim.x;
+  int y = threadIdx.y + blockIdx.y * blockDim.y;
+  int offset = x + y * blockDim.x * gridDim.x;
+
+  _chemA[offset] += _rA[offset];
   _chemA[offset].w = 1.0;
 
-  _chemB[offset] += (DT * reactionB);
+  _chemB[offset] += _rB[offset];
   _chemB[offset].w = 1.0;
 }
 
@@ -283,6 +298,10 @@ static void simulate( void ){
       checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float4)*DIM*DIM ));
       checkCudaErrors(cudaMalloc((void**)&chemB, sizeof(float4)*DIM*DIM ));
       checkCudaErrors(cudaMalloc((void**)&laplacian, sizeof(float4)*DIM*DIM ));
+      
+      float4 *rA, *rB;
+      checkCudaErrors(cudaMalloc((void**)&rA, sizeof(float4)*DIM*DIM ));
+      checkCudaErrors(cudaMalloc((void**)&rB, sizeof(float4)*DIM*DIM )); 
 
       dim3    grid(DIM/16,DIM/16);
       dim3    threads(16,16);
@@ -291,59 +310,61 @@ static void simulate( void ){
 
       // *!* important
       // load chem fields with color 0,0,0,1
-      if (runOnce == false){
+      if (runOnce == true){
         RunOnce<<<grid,threads>>>(chemA);
         RunOnce<<<grid,threads>>>(chemB);
-        runOnce = true;
+        runOnce = false;
       }
 
-      // DrawSquare<<<grid,threads>>>( chemB, true );
+      DrawSquare<<<grid,threads>>>(chemB);
 
-      Diffusion<<<grid,threads>>>( chemA, laplacian, dA, false, mouse_old_x, mouse_old_y );
-      AddLaplacian<<<grid,threads>>>( chemA, laplacian );
+      if (frameNum > 0) {
 
-      Diffusion<<<grid,threads>>>( chemB, laplacian, dB, true, mouse_old_x, mouse_old_y );
-      AddLaplacian<<<grid,threads>>>( chemB, laplacian );
+        Diffusion<<<grid,threads>>>( chemA, laplacian, dA, mouse_old_x, mouse_old_y );
+        AddLaplacian<<<grid,threads>>>( chemA, laplacian );
 
-      React<<<grid,threads>>>( chemA, chemB );
+        RunOnce<<<grid,threads>>>(laplacian);
 
+        Diffusion<<<grid,threads>>>( chemB, laplacian, dB, mouse_old_x, mouse_old_y );
+        AddLaplacian<<<grid,threads>>>( chemB, laplacian );
+
+        React<<<grid,threads>>>( chemA, chemB, rA, rB );
+        AddReaction<<<grid,threads>>>( chemA, chemB, rA, rB );
+      }
 
       cudaGraphicsMapResources( 1, &resource1, 0 );
-      checkCudaErrors(cudaGraphicsResourceGetMappedPointer( (void**)&displayPtr, &size, resource1));
-      checkCudaErrors (cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+      checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &size, resource1)); 
+      checkCudaErrors(cudaMemcpy(displayPtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
     
-      if (frameNum == 1000 || frameNum == 9000 || frameNum == 17600) writeCpy = true;
-
-      if (writeCpy) {
-        float4* writePtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-        checkCudaErrors (cudaMemcpy(writePtr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-        
-        char str[CHAR_BIT * sizeof(int) / 3 + 2];
-        sprintf(str, "data/cuda_x%d.txt", frameNum);
-        FILE* file;
-        file = fopen(str, "wb");
-
-        int totalCells = DIM * DIM;
-        // double* dataDouble = new double[totalCells * 3];
-        for (int i = 0; i < totalCells; i++) {
-          fprintf(file, "%f\n", (double)writePtr[i].x);
-          fprintf(file, "%f\n", (double)writePtr[i].y);
-          fprintf(file, "%f\n", (double)writePtr[i].z);
-        }
-
-        fclose(file);
-
-        writeCpy = false;
-        printf("Wrote file!\n");
+      // if (frameNum == 1000 || frameNum == 9000 || frameNum == 17000 ||
+      //     frameNum == 19000 || frameNum == 21000 || frameNum == 23000) {
+      if (frameNum % 500 == 0 && frameNum <= 10000) {
+        writeCpy = true;
       }
+      
+      if (writeCpy) {
+        float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+        checkCudaErrors (cudaMemcpy(img_ptr, chemB, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+
+        char filename_txt[1024 * sizeof(int) / 3 + 2];
+        sprintf(filename_txt, "data/cuda_x%d.txt", frameNum);
+        write(filename_txt, img_ptr);
+
+        char filename_png[1024 * sizeof(int) / 3 + 2];
+        sprintf(filename_png, "data/cuda_x%d.png", frameNum);
+        writePNG(filename_png, img_ptr, 256, 256);
+      }
+
       
       checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
       checkCudaErrors(cudaFree(chemA));
       checkCudaErrors(cudaFree(chemB));
+      checkCudaErrors(cudaFree(rA));
+      checkCudaErrors(cudaFree(rB));
       checkCudaErrors(cudaFree(laplacian));
       
       frameNum++;
-      if (frameNum == pause) togSimulate = false;
+      // if (frameNum == pause) togSimulate = false;
     }
 
 

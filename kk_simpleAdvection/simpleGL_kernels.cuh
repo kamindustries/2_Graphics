@@ -27,12 +27,6 @@ __device__ int IX( int x, int y) {
   return x + (y * blockDim.x * gridDim.x);
 }
 
-__device__ int IX2(int i, int j) {
-  return ((i)+(N+2)*(j));
-}
-
-
-
 __device__ int getX() {
   return threadIdx.x + (blockIdx.x * blockDim.x);
 }
@@ -60,7 +54,6 @@ __device__ void set_bnd( int b, int x, int y, float *field) {
 __global__ void SetBoundary( int b, float *field ) {
   int x = getX();
   int y = getY();
-  int id = IX(x,y);
 
   set_bnd(b, x, y, field);
 }
@@ -108,13 +101,13 @@ __global__ void GetFromUI ( float * field, int x_coord, int y_coord, float value
   else return;
 }
 
-__global__ void WeirdThing ( float * d, float * u, float * v ) {
-  int x = getX();
-  int y = getY();
-  int id = IX(x,y);
-
-  u[id] = v[id] = d[id] = 0.0;
-}
+// __global__ void ClearThreeArrays ( float * d, float * u, float * v ) {
+//   int x = getX();
+//   int y = getY();
+//   int id = IX(x,y);
+//
+//   u[id] = v[id] = d[id] = 0.0;
+// }
 
 __global__ void InitVelocity ( float * field ) {
   int x = getX();
@@ -144,7 +137,7 @@ __global__ void AddStaticVelocity ( float * field, float value, float dt ) {
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 
-__global__ void AddSource ( float * field, float * source, float dt ) {
+__global__ void AddSource ( float *field, float *source, float dt ) {
   int x = getX();
   int y = getY();
   int id = IX(x,y);
@@ -152,7 +145,7 @@ __global__ void AddSource ( float * field, float * source, float dt ) {
   field[id] += (dt * source[id]);
 }
 
-__global__ void LinSolve( int b, float *field, float *field0, float a, float c) {
+__global__ void LinSolve( float *field, float *field0, float a, float c) {
   int x = getX();
   int y = getY();
   int id = IX(x,y);
@@ -160,10 +153,9 @@ __global__ void LinSolve( int b, float *field, float *field0, float a, float c) 
   // if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
     field[id] = (float)(field0[id] + ((float)a*(field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]))) / c;
   // }
-  // set_bnd( b, x, y, field );
 }
 
-__global__ void Advect ( int b, float *field, float * field0, float *u, float *v, float dt ) {
+__global__ void Advect ( float *field, float *field0, float *u, float *v, float dt ) {
   int i = getX();
   int j = getY();
   int id = IX(i,j);
@@ -195,10 +187,9 @@ __global__ void Advect ( int b, float *field, float * field0, float *u, float *v
     field[id] = (float)s0*(t0*field0[IX(i0,j0)] + t1*field0[IX(i0,j1)])+
 			 				         s1*(t0*field0[IX(i1,j0)] + t1*field0[IX(i1,j1)]);
   // }
-  // set_bnd(b, x, y, field );
 }
 
-__global__ void Project ( float * u, float * v, float * p, float * div ) {
+__global__ void Project ( float *u, float *v, float *p, float *div ) {
   int x = getX();
   int y = getY();
   int id = IX(x,y);
@@ -209,7 +200,7 @@ __global__ void Project ( float * u, float * v, float * p, float * div ) {
   }
 }
 
-__global__ void ProjectFinish ( float * u, float * v, float * p, float * div ) {
+__global__ void ProjectFinish ( float *u, float *v, float *p, float *div ) {
   int x = getX();
   int y = getY();
   int id = IX(x,y);
@@ -218,11 +209,8 @@ __global__ void ProjectFinish ( float * u, float * v, float * p, float * div ) {
     u[id] -= (0.5 * float(N) * (p[IX(x+1,y)] - p[IX(x-1,y)]));
     v[id] -= (0.5 * float(N) * (p[IX(x,y+1)] - p[IX(x,y-1)]));
   }
-  // set_bnd ( 1, x, y, u );
-  // set_bnd ( 2, x, y, v );
 }
 
-//
 // really dont like that i have to do this...
 //
 __global__ void MakeColor( float *data, float4 *_toDisplay) {
