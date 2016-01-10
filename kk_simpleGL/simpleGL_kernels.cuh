@@ -16,15 +16,15 @@ __device__ int checkPosition(int _pos){
   else return _pos % dmax;
 }
 
-__global__ void RunOnce( float4 *_chem) {
+__global__ void ClearArray( float *_chem, float value) {
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
   int offset = x + y * blockDim.x * gridDim.x;
 
-  _chem[offset] = make_float4(0.,0.,0.,1.);
+  _chem[offset] = value;
 }
 
-__global__ void DrawSquare( float4 *_chem ) {
+__global__ void DrawSquare( float *_chem ) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   // map from threadIdx/BlockIdx to pixel position
@@ -39,12 +39,12 @@ __global__ void DrawSquare( float4 *_chem ) {
   if ( x < 200 && x > 116 && y < 140 && y > 30 ) {
   // if ( posX < .75 && posX > .45 && posY < .55 && posY > .45 ) {
   // if ( posX < m_x+.05 && posX > m_x-.05 && posY < m_y+.05 && posY > m_y-.05 ) {    //use mouse position
-    _chem[offset] = make_float4(1.,1.,1.,1.);
+    _chem[offset] = 1.0;
   }
 
 }
 
-__global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, int mouse_x, int mouse_y) {
+__global__ void Diffusion( float *_chem, float *_lap, float _difConst, int mouse_x, int mouse_y) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   // map from threadIdx/BlockIdx to pixel position
@@ -54,10 +54,10 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, int mou
 
   // constants
   // float xLength = (float)DIM/100.0;
-  float xLength = 2.56;
+  float xLength = 2.56f;
   // float dx = (float)xLength/DIM;
-  float dx = 0.01;
-  float alpha = _difConst * DT / (dx*dx);
+  float dx = 0.01f;
+  float alpha = (float)(_difConst * .1f / (float)(dx*dx));
 
   // int n1 = (x+1)%DIM;
   // int n2 = (x-1)%DIM;
@@ -94,12 +94,12 @@ __global__ void Diffusion( float4 *_chem, float4 *_lap, float _difConst, int mou
   // int n4 = checkPosition(x + (y-1) * blockDim.x * gridDim.x);
   // __syncthreads();
 
-  _lap[offset] = -4.0f * _chem[offset] + _chem[n1] + _chem[n2] + _chem[n3] + _chem[n4];
-  _lap[offset] *= alpha;
+  _lap[offset] = (float)(-4.0f * _chem[offset]) + (float)(_chem[n1] + _chem[n2] + _chem[n3] + _chem[n4]);
+  _lap[offset] = (float)_lap[offset]*alpha;
 
 }
 
-__global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
+__global__ void AddLaplacian( float *_chem, float *_lap) {
   if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   int x = threadIdx.x + blockIdx.x * blockDim.x;
@@ -107,54 +107,31 @@ __global__ void AddLaplacian( float4 *_chem, float4 *_lap) {
   int offset = x + y * blockDim.x * gridDim.x;
 
   _chem[offset] += _lap[offset];
-  _chem[offset].w = 1.0;
-
 }
 
-__global__ void React( float4 *_chemA, float4 *_chemB, float4 *_rA, float4 *_rB) {
+__global__ void React( float *_chemA, float *_chemB) {
   // if (threadIdx.x > DIM || threadIdx.y > DIM) return;
 
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
   int offset = x + y * blockDim.x * gridDim.x;
 
-  float F = 0.05;
-  float k = 0.0675;
-  float4 A = _chemA[offset];
-  float4 B = _chemB[offset];
+  float F = 0.05f;
+  float k = 0.0675f;
+  float A = float(_chemA[offset]);
+  float B = float(_chemB[offset]);
 
-  float4 reactionA = make_float4(-A.x * (B.x*B.x) + (F * (1.0-A.x)),
-                                -A.y * (B.y*B.y) + (F * (1.0-A.y)),
-                                -A.z * (B.z*B.z) + (F * (1.0-A.z)),
-                                -A.w * (B.w*B.w) + (F * (1.0-A.w))
-                                );
+  float reactionA = (float)(-A * (float)(B*B) + (float)(F * (float)(1.0f-A)));
+  float reactionB = (float)(A * (float)(B*B) - (float)(F+k)*B);
 
-  float4 reactionB = make_float4(A.x * (B.x*B.x) - (F+k)*B.x,
-                                A.y * (B.y*B.y) - (F+k)*B.y,
-                                A.z * (B.z*B.z) - (F+k)*B.z,
-                                A.w * (B.w*B.w) - (F+k)*B.w
-                                );
-
-  _rA[offset] = reactionA * .1;
-  _rB[offset] = reactionB * .1;
-
-  // _chemA[offset] += (DT * reactionA); //need parenthesis
-  // _chemA[offset].w = 1.0;
-
-  // _chemB[offset] += (DT * reactionB);
-  // _chemB[offset].w = 1.0;
+  _chemA[offset] += (float)(.1f * reactionA);
+  _chemB[offset] += (float)(.1f * reactionB);
 }
 
-__global__ void AddReaction( float4 *_chemA, float4 *_chemB, float4 *_rA, float4 *_rB) {
-  // if (threadIdx.x > DIM || threadIdx.y > DIM) return;
-
+__global__ void MakeColor( float *field, float4 *displayPtr) {
   int x = threadIdx.x + blockIdx.x * blockDim.x;
   int y = threadIdx.y + blockIdx.y * blockDim.y;
-  int offset = x + y * blockDim.x * gridDim.x;
+  int id = x + y * blockDim.x * gridDim.x;
 
-  _chemA[offset] += _rA[offset];
-  _chemA[offset].w = 1.0;
-
-  _chemB[offset] += _rB[offset];
-  _chemB[offset].w = 1.0;
+  displayPtr[id] = make_float4(field[id],field[id],field[id],1.0);
 }

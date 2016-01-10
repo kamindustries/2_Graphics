@@ -13,7 +13,7 @@ dim3 grid, threads;
 int size = 0;
 int win_x = 512;
 int win_y = 512;
-float dt = 0.1;
+float dt = .1;
 float diff = 0.0f;
 float visc = 0.0f;
 float force = 5.0;
@@ -205,8 +205,6 @@ void RD_step(int b, float *chemA, float *chemA0, float *chemB, float *chemB0, fl
   float a2=dt*dB*float(N)*float(N); // needed to float(N) to get it to work...
 
   for (int k = 0; k < 20; k++) {
-    React<<<grid,threads>>>( chemA, chemB, dt );
-    React<<<grid,threads>>>( chemA0, chemB0, dt );
     LinSolve<<<grid,threads>>>( chemA, chemA0, a1, (float)1.0+(4.0*a1) );
     LinSolve<<<grid,threads>>>( chemB, chemB0, a2, (float)1.0+(4.0*a2) );
     SetBoundary<<<grid,threads>>>( b, chemA );
@@ -245,49 +243,65 @@ void proj_step( float *u, float *v, float *p, float *div) {
 void dens_step ( float *chemA, float *chemA0, float *chemB, float *chemB0,
                   float *u, float *v, float diff, float dt )
 {
+
+  // Naive ARD-----------------------
+  // AddSource<<<grid,threads>>>(chemB, chemB0, dt );
+  // chemA0 = chemA;
+  // chemB0 = chemB;
+  // for (int i = 0; i < 10; i++){
+  //   Diffusion<<<grid,threads>>>(chemA, laplacian, dA, dt);
+  //   AddLaplacian<<<grid,threads>>>(chemA, laplacian);
+  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
+  //
+  //   Diffusion<<<grid,threads>>>(chemB, laplacian, dB, dt);
+  //   AddLaplacian<<<grid,threads>>>(chemB, laplacian);
+  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
+  //
+  //   React<<<grid,threads>>>( chemA, chemB, dt );
+  // }
+
+  // Diffusion Ted-----------------------
   AddSource<<<grid,threads>>>(chemB, chemB0, dt );
   chemA0 = chemA;
   chemB0 = chemB;
-  for (int i = 0; i < 10; i++){
-  // AddSource<<<grid,threads>>>(chemA,chemA0, dt );
+  ReactStable<<<grid,threads>>>( chemA, chemB, dt );
+  SWAP (chemA0,chemA );
+  SWAP (chemB0,chemB );
+  // diffuse_step( 0,chemA,chemA0, dA, dt);
+  // diffuse_step( 0,chemB,chemB0, dB, dt);
+
+  float a1=dt*dA*float(N)*float(N);
+  float a2=dt*dB*float(N)*float(N);
+  float h = (float)1.0/float(N);
+  float h1 = 1.0+(4.0*a1);
+  float h2 = 1.0+(4.0*a2);
+  for (int i = 0; i < 20; i++){
+    DiffusionTed<<<grid,threads>>>(chemA, chemA0, dt, a1, h1);
+    DiffusionTed<<<grid,threads>>>(chemB, chemB0, dt, a2, h2);
+    SetBoundary<<<grid,threads>>>( 0, chemA );
+    SetBoundary<<<grid,threads>>>( 0, chemB );
+  }
+
+  // float *chemA_tmp = chemA;
+  // float *chemB_tmp = chemB;
+
+  // ReactStable<<<grid,threads>>>( chemA_tmp, chemB_tmp, dt );
+
+  // SWAP (chemA0,chemA );
+  // SWAP (chemB0,chemB );
+
   // SWAP (chemA0,chemA );
   // SWAP (chemB0,chemB );
 
 
-
-  Diffusion<<<grid,threads>>>(chemA, laplacian, dA, dt);
-  AddLaplacian<<<grid,threads>>>(chemA, laplacian);
-  ClearArray<<<grid,threads>>>(laplacian, 0.0);
-
-  Diffusion<<<grid,threads>>>(chemB, laplacian, dB, dt);
-  AddLaplacian<<<grid,threads>>>(chemB, laplacian);
-  ClearArray<<<grid,threads>>>(laplacian, 0.0);
-
-  React<<<grid,threads>>>( chemA, chemB, dt );
-  }
-
-  // React<<<grid,threads>>>(chemA, chemB, dt );
-
-  // float *chemA_tmp = chemA;
-  // float *chemB_tmp = chemB;
-  //
-  // ReactStable<<<grid,threads>>>( chemA_tmp, chemB_tmp, dt );
-  //
-  // // for (int k = 0; k < 20; k++) {
-  //   DiffusionTed<<<grid,threads>>>( chemA, chemA_tmp, dt, dA, (float)1.0f/float(N) );
-  //   DiffusionTed<<<grid,threads>>>( chemB, chemB_tmp, dt, dB, (float)1.0f/float(N) );
-  //   SetBoundary<<<grid,threads>>>( 0, chemA );
-  //   SetBoundary<<<grid,threads>>>( 0, chemB );
-  // // }
-
-  // diffuse_step( 0,chemA,chemA_tmp, dA, dt);
-  // diffuse_step( 0,chemB,chemB_tmp, dB, dt);
+  // diffuse_step( 0,chemA,chemA0, dA, dt);
+  // diffuse_step( 0,chemB,chemB0, dB, dt);
   // RD_step( 0,chemA,chemA0, chemB, chemB0, diff, dt);
 
-  SWAP (chemA0,chemA );
-  advect_step(0,chemA,chemA0, u, v, dt);
-  SWAP (chemB0,chemB );
-  advect_step(0,chemB,chemB0, u, v, dt);
+  // SWAP (chemA0,chemA );
+  // advect_step(0,chemA,chemA0, u, v, dt);
+  // SWAP (chemB0,chemB );
+  // advect_step(0,chemB,chemB0, u, v, dt);
 
 
   // React<<<grid,threads>>>( chemA, chemB, dt );

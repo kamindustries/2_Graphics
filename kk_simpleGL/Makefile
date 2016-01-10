@@ -182,7 +182,7 @@ ALL_LDFLAGS += $(addprefix -Xlinker ,$(EXTRA_LDFLAGS))
 
 # Common includes and paths for CUDA
 INCLUDES  := -I../../common/inc
-LIBRARIES := 
+LIBRARIES :=
 
 ################################################################################
 
@@ -204,9 +204,11 @@ endif
 
 # Gencode arguments
 ifeq ($(TARGET_ARCH),armv7l)
-SMS ?= 20 30 32 35 37 50 52
+# SMS ?= 20 30 32 35 37 50 52
+SMS ?= 30
 else
-SMS ?= 20 30 35 37 50 52
+# SMS ?= 20 30 35 37 50 52
+SMS ?= 30
 endif
 
 ifeq ($(SMS),)

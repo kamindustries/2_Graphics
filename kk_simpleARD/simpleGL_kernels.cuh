@@ -150,7 +150,7 @@ __global__ void LinSolve( float *field, float *field0, float a, float c) {
   int y = getY();
   int id = IX(x,y);
 
-  field[id] = (float)(field0[id] + ((float)a*(field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]))) / c;
+  field[id] = (field0[id] + (a* (field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]) )) / c;
 }
 
 __global__ void Advect ( float *field, float *field0, float *u, float *v, float dt ) {
@@ -272,32 +272,34 @@ __global__ void ReactStable( float *_chemA, float *_chemB, float dt) {
   float k = 0.0675;
   float A = _chemA[id];
   float B = _chemB[id];
+  if (B > 1.0) B = 1.0; if (B < 0.0) B = 0.0;
+  if (A > 1.0) A = 1.0; if (A < 0.0) A = 0.0;
+
   float B_new = B;
   float B_og = B;
   float dfdx = B;
   float f = 0.0;
+  float dx = 1.0;
 
   for (int i = 0; i < 100; i++) {
+  // while (dx > 1e-6) {
     B = B_new;
-    f = B_og + dt*( ((A + F*dt)/(dt*(B*B) + F*dt + 1.0f))*(B*B) - (F+k)*B );
+    f = B_og + dt*( ((A + F*dt)/((dt*(B*B)) + (F*dt) + 1.0f))*(B*B) - ((F+k)*B) );
     float numerator = (2.0f*A*B*F*(dt*dt)) + (2.0f*A*B*dt) + (2.0f*(F*F)*B*(dt*dt*dt)) + (2.0f*F*B*(dt*dt));
-    float denominator = ((B*B*B*B)*(dt*dt) + (2.0f*((B*B)*F*(dt*dt))) + (B*B) + ((F*F)*(dt*dt)) + (2.0f*(F*dt)) + ((B*B)*dt)) + 1.0f;
-    dfdx = (numerator / denominator) - (F*dt) + (k*dt);
+    float denominator = ((B*B)*dt) + (F*dt) + 1.0 ;
+    dfdx = (numerator / (denominator*denominator)) - (F*dt) - (k*dt);
     // Newton-Raphson step
     B_new = B - (f/dfdx);
-    if (abs(B-B_new) < 1e-6) {
-      B = B_new;
-      A = (A + F*dt) / (dt*(B*B) + F*dt + 1.0f);
-      _chemA[id] = A;
-      _chemB[id] = B;
-      return;
-    }
+    dx = abs(B-B_new);
+    // if (dx < 1e-6) break;
   }
 
-  A = (A + F*dt) / (dt*(B*B) + F*dt + 1.0f);
+  if (B_new > 1.0) B_new = 1.0; if (B_new < 0.0) B_new = 0.0;
+  A = (A + (F*dt)) / ((dt*(B_new*B_new)) + (F*dt) + 1.0f);
+  if (A > 1.0) A = 1.0; if (A < 0.0) A = -0.0;
 
   _chemA[id] = A;
-  _chemB[id] = B;
+  _chemB[id] = B_new;
 }
 
 __global__ void DiffusionTed( float *field, float *field0, float dt, float a, float h ) {
@@ -308,6 +310,12 @@ __global__ void DiffusionTed( float *field, float *field0, float dt, float a, fl
   float q = (dt*a)/(h*h);
   field[id] = field0[id] + q*(field[IX(x-1,y)] + field[IX(x,y-1)] - 4*field[id] +
                               field[IX(x+1,y)] + field[IX(x,y+1)]);
+
+  if (field[id] > 1.0) field[id] = 1.0;
+  if (field[id] < 0.0) field[id] = 0.0;
+
+  // field[id] = (field0[id] + (a* (field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]) )) / h;
+
 }
 
 // really dont like that i have to do this...
