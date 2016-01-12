@@ -245,42 +245,42 @@ void dens_step ( float *chemA, float *chemA0, float *chemB, float *chemB0,
 {
 
   // Naive ARD-----------------------
-  // AddSource<<<grid,threads>>>(chemB, chemB0, dt );
-  // chemA0 = chemA;
-  // chemB0 = chemB;
-  // for (int i = 0; i < 10; i++){
-  //   Diffusion<<<grid,threads>>>(chemA, laplacian, dA, dt);
-  //   AddLaplacian<<<grid,threads>>>(chemA, laplacian);
-  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
-  //
-  //   Diffusion<<<grid,threads>>>(chemB, laplacian, dB, dt);
-  //   AddLaplacian<<<grid,threads>>>(chemB, laplacian);
-  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
-  //
-  //   React<<<grid,threads>>>( chemA, chemB, dt );
-  // }
-
-  // Diffusion Ted-----------------------
   AddSource<<<grid,threads>>>(chemB, chemB0, dt );
   chemA0 = chemA;
   chemB0 = chemB;
-  ReactStable<<<grid,threads>>>( chemA, chemB, dt );
-  SWAP (chemA0,chemA );
-  SWAP (chemB0,chemB );
-  // diffuse_step( 0,chemA,chemA0, dA, dt);
-  // diffuse_step( 0,chemB,chemB0, dB, dt);
+  for (int i = 0; i < 10; i++){
+    Diffusion<<<grid,threads>>>(chemA, laplacian, dA, dt);
+    AddLaplacian<<<grid,threads>>>(chemA, laplacian);
+    ClearArray<<<grid,threads>>>(laplacian, 0.0);
 
-  float a1=dt*dA*float(N)*float(N);
-  float a2=dt*dB*float(N)*float(N);
-  float h = (float)1.0/float(N);
-  float h1 = 1.0+(4.0*a1);
-  float h2 = 1.0+(4.0*a2);
-  for (int i = 0; i < 20; i++){
-    DiffusionTed<<<grid,threads>>>(chemA, chemA0, dt, a1, h1);
-    DiffusionTed<<<grid,threads>>>(chemB, chemB0, dt, a2, h2);
-    SetBoundary<<<grid,threads>>>( 0, chemA );
-    SetBoundary<<<grid,threads>>>( 0, chemB );
+    Diffusion<<<grid,threads>>>(chemB, laplacian, dB, dt);
+    AddLaplacian<<<grid,threads>>>(chemB, laplacian);
+    ClearArray<<<grid,threads>>>(laplacian, 0.0);
+
+    React<<<grid,threads>>>( chemA, chemB, dt );
   }
+
+  // // Diffusion Ted-----------------------
+  // AddSource<<<grid,threads>>>(chemB, chemB0, dt );
+  // chemA0 = chemA;
+  // chemB0 = chemB;
+  // ReactStable<<<grid,threads>>>( chemA, chemB, dt );
+  // SWAP (chemA0,chemA );
+  // SWAP (chemB0,chemB );
+  // // diffuse_step( 0,chemA,chemA0, dA, dt);
+  // // diffuse_step( 0,chemB,chemB0, dB, dt);
+  //
+  // float a1=dt*dA*float(N)*float(N);
+  // float a2=dt*dB*float(N)*float(N);
+  // float h = (float)1.0/float(N);
+  // float h1 = 1.0+(4.0*a1);
+  // float h2 = 1.0+(4.0*a2);
+  // for (int i = 0; i < 20; i++){
+  //   DiffusionTed<<<grid,threads>>>(chemA, chemA0, dt, a1, h1);
+  //   DiffusionTed<<<grid,threads>>>(chemB, chemB0, dt, a2, h2);
+  //   SetBoundary<<<grid,threads>>>( 0, chemA );
+  //   SetBoundary<<<grid,threads>>>( 0, chemB );
+  // }
 
   // float *chemA_tmp = chemA;
   // float *chemB_tmp = chemB;
@@ -290,18 +290,13 @@ void dens_step ( float *chemA, float *chemA0, float *chemB, float *chemB0,
   // SWAP (chemA0,chemA );
   // SWAP (chemB0,chemB );
 
-  // SWAP (chemA0,chemA );
-  // SWAP (chemB0,chemB );
-
-
-  // diffuse_step( 0,chemA,chemA0, dA, dt);
-  // diffuse_step( 0,chemB,chemB0, dB, dt);
   // RD_step( 0,chemA,chemA0, chemB, chemB0, diff, dt);
 
-  // SWAP (chemA0,chemA );
-  // advect_step(0,chemA,chemA0, u, v, dt);
-  // SWAP (chemB0,chemB );
-  // advect_step(0,chemB,chemB0, u, v, dt);
+  // Advect-----------------------
+  SWAP (chemA0,chemA );
+  advect_step(0,chemA,chemA0, u, v, dt);
+  SWAP (chemB0,chemB );
+  advect_step(0,chemB,chemB0, u, v, dt);
 
 
   // React<<<grid,threads>>>( chemA, chemB, dt );

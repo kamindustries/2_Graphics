@@ -311,9 +311,6 @@ __global__ void DiffusionTed( float *field, float *field0, float dt, float a, fl
   field[id] = field0[id] + q*(field[IX(x-1,y)] + field[IX(x,y-1)] - 4*field[id] +
                               field[IX(x+1,y)] + field[IX(x,y+1)]);
 
-  if (field[id] > 1.0) field[id] = 1.0;
-  if (field[id] < 0.0) field[id] = 0.0;
-
   // field[id] = (field0[id] + (a* (field[IX(x-1,y)] + field[IX(x+1,y)] + field[IX(x,y-1)] + field[IX(x,y+1)]) )) / h;
 
 }
