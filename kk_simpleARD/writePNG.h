@@ -14,7 +14,7 @@ void writePNG(string _filename, float4* _img, int _width, int _height) {
 
   // // copy image data into pointers
   png_bytep* row_pointers;
-  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * 256);
+  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * _height);
   for (int y = 0; y < _height; y++)
     row_pointers[y] = (png_byte*) malloc(sizeof(png_byte) * _width * 3);
 

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "writePNG.h"
+#include "lodepng.h"
 #include "simpleGL_kernels.cuh"
 
 #define MAX(a,b) ((a > b) ? a : b)
@@ -14,7 +15,7 @@ int size = 0;
 int win_x = 512;
 int win_y = 512;
 float dt = 0.1;
-float diff = 0.00001f;
+float diff = 0.00002f;
 float visc = 0.0f;
 float force = 5.0;
 float source_density = 100.0;
@@ -27,7 +28,11 @@ float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
 int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
+int animFrameNum = 0;
+
 StopWatchInterface *timer = NULL;
+timespec time1, time2;
+timespec time_diff(timespec start, timespec end);
 
 float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
 float4 *displayPtr, *toDisplay;
@@ -37,15 +42,14 @@ bool hasRunOnce = false;
 // mouse controls
 static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
-bool togSimulate = true;
+bool togSimulate = false;
 int max_simulate = 0;
-
-bool writeCpy = false;
-bool writeDone = false;
-
 
 int ID(int i, int j) { return (i+((N+2)*j)); }
 
+// Convert to webm:
+// png2yuv -I p -f 60 -b 1 -n 1628 -j cuda_x%05d.png > cuda_YUV.yuv
+// vpxenc --good --cpu-used=0 --auto-alt-ref=1 --lag-in-frames=16 --end-usage=vbr --passes=2 --threads=2 --target-bitrate=3000 -o cuda_WEBM.webm cuda_YUV.yuv
 ///////////////////////////////////////////////////////////////////////////////
 // Initialize Variables
 ///////////////////////////////////////////////////////////////////////////////
@@ -131,6 +135,54 @@ void computeFPS() {
   char fps[256];
   sprintf(fps, "Cuda GL Interop: %3.1f fps (Max 100Hz)", avgFPS);
   glutSetWindowTitle(fps);
+}
+
+///////////////////////////////////////
+// Write
+///////////////////////////////////////
+void write(const char* _filename, float4* _img) {
+    FILE* file;
+    file = fopen(_filename, "wb");
+
+    int totalCells = DIM * DIM;
+    // double* dataDouble = new double[totalCells * 3];
+    for (int i = 0; i < totalCells; i++) {
+      fprintf(file, "%f\n", _img[i].x);
+      fprintf(file, "%f\n", _img[i].y);
+      fprintf(file, "%f\n", _img[i].z);
+    }
+
+    fclose(file);
+    printf("Wrote file!\n");
+}
+
+void writeCpy (bool _write_txt = true, bool _write_img = true, int _increment = frameNum) {
+  float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+  checkCudaErrors (cudaMemcpy(img_ptr, displayPtr, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+  if (_write_txt){
+    char filename_txt[1024 * sizeof(int) / 3 + 2];
+    sprintf(filename_txt, "data/cuda_x%d.txt", _increment);
+    write(filename_txt, img_ptr);
+  }
+  if (_write_img){
+    char filename_png[2048 * sizeof(int) / 3 + 2];
+    sprintf(filename_png, "data/images/cuda_x%05d.png", _increment);
+    writePNG(filename_png, img_ptr, DIM, DIM);
+  }
+  free(img_ptr);
+}
+
+timespec time_diff(timespec start, timespec end)
+{
+	timespec temp;
+	if ((end.tv_nsec-start.tv_nsec)<0) {
+		temp.tv_sec = end.tv_sec-start.tv_sec-1;
+		temp.tv_nsec = 1000000000+end.tv_nsec-start.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -244,18 +296,18 @@ static void simulate( void ){
     get_from_UI(dens_prev, u_prev, v_prev);
     vel_step( u, v, u_prev, v_prev, visc, dt );
     dens_step( dens, dens_prev, u, v, diff, dt );
-    MakeColor<<<grid,threads>>>(dens, toDisplay);
+    MakeColor<<<grid,threads>>>(dens, displayPtr);
   }
 
   size_t  sizeT;
   cudaGraphicsMapResources( 1, &resource1, 0 );
   checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, resource1));
-  checkCudaErrors(cudaMemcpy(displayPtr, toDisplay, sizeof(float4)*size, cudaMemcpyDeviceToHost ));
+  // checkCudaErrors(cudaMemcpy(displayPtr, toDisplay, sizeof(float4)*size, cudaMemcpyDeviceToHost ));
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
 
   sdkStopTimer(&timer);
   computeFPS();
-  glutPostRedisplay();
+  // glutPostRedisplay();
 }
 
 
@@ -271,6 +323,8 @@ static void pre_display ( void ) {
 // Draw
 ///////////////////////////////////////////////////////////////////////////////
 static void draw_func( void ) {
+
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
 
   pre_display ();
 
@@ -291,31 +345,23 @@ static void draw_func( void ) {
 
   glutSwapBuffers();
 
+  float fr = 1.0f/60.0f;
+  float df = float(time_diff(time1,time2).tv_nsec)/1000.0f;
+  // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
+  if (time_diff(time1,time2).tv_nsec > fr) {
+    if (togSimulate) {
+      writeCpy(0,1,animFrameNum);
+      animFrameNum++;
+    }
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
+    glutPostRedisplay(); // causes draw to loop forever
+  }
   // glutPostRedisplay(); // causes draw to loop forever
 
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // Misc functions
-///////////////////////////////////////
-// Write
-///////////////////////////////////////
-void write(const char* _filename, float4* _img) {
-  FILE* file;
-  file = fopen(_filename, "wb");
-
-  int totalCells = DIM * DIM;
-  for (int i = 0; i < totalCells; i++) {
-    fprintf(file, "%f\n", _img[i].x);
-    fprintf(file, "%f\n", _img[i].y);
-    fprintf(file, "%f\n", _img[i].z);
-  }
-
-  fclose(file);
-
-  writeCpy = false;
-  printf("Wrote file!\n");
-}
 ///////////////////////////////////////
 // Close
 ///////////////////////////////////////
@@ -361,7 +407,7 @@ static void key_func( unsigned char key, int x, int y ) {
         draw_func();
         break;
     case '.':
-        writeCpy = true;
+        writeCpy();
         break;
     case ']':
         diff += 0.000001f;

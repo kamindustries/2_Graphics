@@ -68,7 +68,7 @@ __global__ void DrawSquare( float *field, float value ) {
   // q1. draws a square
   float posX = (float)x/DIM;
   float posY = (float)y/DIM;
-  if ( posX < .75 && posX > .45 && posY < .51 && posY > .48 ) {
+  if ( posX < .72 && posX > .45 && posY < .51 && posY > .495 ) {
     field[id] = value;
   }
 }

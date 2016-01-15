@@ -4,17 +4,17 @@
 using namespace std;
 ///////////////////////////////////////////////////////////////////////
 // code based on example code from
-// http://zarb.org/~gc/html/libpng.html  
+// http://zarb.org/~gc/html/libpng.html
 ///////////////////////////////////////////////////////////////////////
 void writePNG(string _filename, float4* _img, int _width, int _height) {
   printf("Writing out PNG file: %s\n", _filename.c_str());
 
-  // int _width = _xRes; 
+  // int _width = _xRes;
   // int _height = _yRes;
 
   // // copy image data into pointers
   png_bytep* row_pointers;
-  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * 256);
+  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * _height);
   for (int y = 0; y < _height; y++)
     row_pointers[y] = (png_byte*) malloc(sizeof(png_byte) * _width * 3);
 
@@ -75,7 +75,7 @@ void writePNG(string _filename, float4* _img, int _width, int _height) {
     printf("[write_png_file] Error during writing bytes\n");
 
   png_write_image(png_ptr, row_pointers);
-  
+
   // end write
   if (setjmp(png_jmpbuf(png_ptr)))
     printf("[write_png_file] Error during end of write\n");

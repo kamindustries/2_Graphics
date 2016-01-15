@@ -6,6 +6,7 @@
 #include <GL/freeglut.h>
 #include <cuda_gl_interop.h>
 #include <timer.h>               // timing functions
+#include <time.h>
 #include <helper_functions.h>    // includes cuda.h and cuda_runtime_api.h
 #include <helper_cuda.h>         // helper functions for CUDA error check
 #include <helper_cuda_gl.h>
@@ -16,14 +17,6 @@
 #include "writePNG.h"
 #include "simpleGL_kernels.cuh"
 
-
-// static void HandleError( cudaError_t err, const char *file,  int line ) {
-//     if (err != cudaSuccess) {
-//             printf( "%s in %s at line %d\n", cudaGetErrorString( err ),  file, line );
-//             exit( EXIT_FAILURE );
-//     }
-// }
-// #define HANDLE_ERROR( err ) (HandleError( err, __FILE__, __LINE__ ))
 #define MAX(a,b) ((a > b) ? a : b)
 
 GLuint  bufferObj, bufferObj2;
@@ -31,11 +24,11 @@ GLuint  textureID;
 // cudaGraphicsResource_t resource[2];
 cudaGraphicsResource_t resource1;
 cudaGraphicsResource_t resource2;
-float ttime = 0.0f;
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
 int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
+int animFrameNum = 0;
 unsigned int frameCount = 0;
 float *chemA, *chemB, *laplacian;
 float4 *displayPtr;
@@ -48,6 +41,8 @@ float F = 0.05;
 float k = 0.0675;
 
 StopWatchInterface *timer = NULL;
+timespec time1, time2;
+timespec diff(timespec start, timespec end);
 
 // mouse controls
 int mouse_old_x, mouse_old_y;
@@ -55,10 +50,12 @@ bool togSimulate = false;
 int max_simulate = 0;
 // int pause = 17500;
 
-bool writeCpy = false;
 bool writeDone = false;
 
-
+// Convert to webm:
+// png2yuv -I p -f 60 -b 1 -n 1628 -j cuda_x%05d.png > cuda_YUV.yuv
+// vpxenc --good --cpu-used=0 --auto-alt-ref=1 --lag-in-frames=16 --end-usage=vbr
+//        --passes=2 --threads=2 --target-bitrate=3000 -o cuda_WEBM.webm cuda_YUV.yuv
 ///////////////////////////////////////////////////////////////////////////////
 // Functions
 ///////////////////////////////////////
@@ -78,15 +75,36 @@ void write(const char* _filename, float4* _img) {
 
     fclose(file);
 
-    writeCpy = false;
+    // writeCpy = false;
     printf("Wrote file!\n");
 }
 
-void encodeOneStep(const char* _filename, const unsigned char* image, unsigned width, unsigned height) {
-  /*Encode the image*/
-  unsigned error = lodepng_encode32_file(_filename, image, width, height);
-  /*if there's an error, display it*/
-  if(error) printf("error %u: %s\n", error, lodepng_error_text(error));
+void writeCpy (bool _write_txt = true, bool _write_img = true, int _increment = frameNum) {
+  float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+  checkCudaErrors (cudaMemcpy(img_ptr, displayPtr, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
+  if (_write_txt){
+    char filename_txt[1024 * sizeof(int) / 3 + 2];
+    sprintf(filename_txt, "data/cuda_x%d.txt", _increment);
+    write(filename_txt, img_ptr);
+  }
+  if (_write_img){
+    char filename_png[1024 * sizeof(int) / 3 + 2];
+    sprintf(filename_png, "data/images/cuda_x%05d.png", _increment);
+    writePNG(filename_png, img_ptr, DIM, DIM);
+  }
+}
+
+timespec diff(timespec start, timespec end)
+{
+	timespec temp;
+	if ((end.tv_nsec-start.tv_nsec)<0) {
+		temp.tv_sec = end.tv_sec-start.tv_sec-1;
+		temp.tv_nsec = 1000000000+end.tv_nsec-start.tv_nsec;
+	} else {
+		temp.tv_sec = end.tv_sec-start.tv_sec;
+		temp.tv_nsec = end.tv_nsec-start.tv_nsec;
+	}
+	return temp;
 }
 
 ///////////////////////////////////////
@@ -111,28 +129,12 @@ void computeFPS()
     glutSetWindowTitle(fps);
 }
 
-///////////////////////////////////////
-// Delete PBO
-///////////////////////////////////////
-void deletePBO(GLuint *pbo)
-{
-    glDeleteBuffers(1, pbo);
-    SDK_CHECK_ERROR_GL();
-    *pbo = 0;
-}
-
-void deleteTexture(GLuint *tex)
-{
-    glDeleteTextures(1, tex);
-    SDK_CHECK_ERROR_GL();
-    *tex = 0;
-}
-
 
 ///////////////////////////////////////
 // Simulate
 ///////////////////////////////////////
 static void simulate( void ){
+  if (togSimulate) {
 
     for (int i = 0; i < 10; i++){
       dim3    grid(DIM/16,DIM/16);
@@ -170,23 +172,9 @@ static void simulate( void ){
 
       // if (frameNum == 1000 || frameNum == 9000 || frameNum == 17000 ||
       //     frameNum == 19000 || frameNum == 21000 || frameNum == 23000) {
-      if (frameNum % 500 == 0 && frameNum <= 10000) {
-        writeCpy = true;
-      }
-
-      if (writeCpy) {
-        float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-        checkCudaErrors (cudaMemcpy(img_ptr, displayPtr, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-
-        char filename_txt[1024 * sizeof(int) / 3 + 2];
-        sprintf(filename_txt, "data/cuda_x%d.txt", frameNum);
-        write(filename_txt, img_ptr);
-
-        char filename_png[1024 * sizeof(int) / 3 + 2];
-        sprintf(filename_png, "data/cuda_x%d.png", frameNum);
-        writePNG(filename_png, img_ptr, DIM, DIM);
-      }
-
+      // if (frameNum % 500 == 0 && frameNum <= 10000) {
+        // writeCpy();
+      // }
 
       checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
 
@@ -195,9 +183,9 @@ static void simulate( void ){
       // if (frameNum == pause) togSimulate = false;
     }
 
-
     // printf("chem b: %f", displayPtr[0].x);
     // printf("\r");
+  }
 }
 
 
@@ -205,10 +193,11 @@ static void simulate( void ){
 // Draw
 ///////////////////////////////////////
 static void draw_func( void ) {
+  // if (togSimulate) {
+  //   simulate();
+  // }
 
-  if (togSimulate) {
-    simulate();
-  }
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
 
   glClear(GL_COLOR_BUFFER_BIT);
 
@@ -230,12 +219,18 @@ static void draw_func( void ) {
   glutSwapBuffers();
 
   computeFPS();
-  ttime += 0.0001;
-  glutPostRedisplay(); // causes draw to loop forever
 
-  // printf("frame %d", frameNum);
-  // printf("\r");
-
+  // cout<<diff(time1,time2).tv_sec<<":"<<diff(time1,time2).tv_nsec<<endl;
+  float fr = 1.0f/60.0f;
+  float df = float(diff(time1,time2).tv_nsec)/1000.0f;
+  if (diff(time1,time2).tv_nsec > fr) {
+    if (togSimulate) {
+      writeCpy(0,1,animFrameNum);
+      animFrameNum++;
+    }
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
+    glutPostRedisplay(); // causes draw to loop forever
+  }
 }
 
 ///////////////////////////////////////
@@ -280,7 +275,7 @@ static void key_func( unsigned char key, int x, int y ) {
         draw_func();
         break;
     case '.':
-        writeCpy = true;
+        writeCpy();
         break;
     default:
         break;
@@ -302,6 +297,7 @@ int main(int argc, char *argv[]) {
   // initialize
   glutInit( &argc, argv );
   glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
+	glutInitWindowPosition ( 0, 0 );
   glutInitWindowSize( DIM, DIM );
   glutCreateWindow( "sort test" );
   glewInit();
@@ -335,7 +331,7 @@ int main(int argc, char *argv[]) {
   glutCloseFunc( FreeResource );
   glutKeyboardFunc( key_func );
   glutPassiveMotionFunc(passive);
-  // glutIdleFunc( simulate );
+  glutIdleFunc( simulate );
   glutDisplayFunc( draw_func );
   glutMainLoop();
 

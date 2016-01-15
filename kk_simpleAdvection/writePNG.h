@@ -14,26 +14,26 @@ void writePNG(string _filename, float4* _img, int _width, int _height) {
 
   // // copy image data into pointers
   png_bytep* row_pointers;
-  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * 256);
+  row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * _height);
   for (int y = 0; y < _height; y++)
     row_pointers[y] = (png_byte*) malloc(sizeof(png_byte) * _width * 3);
 
-  for (int y = 0; y < _height; y++)
-    for (int x = 0; x < _width; x++)
-    {
-      int pos = (y*_height) + x;
-      float4 value = _img[pos] * 255;
-      // for (int i = 0; i < 3; i++)
-      // {
-        value.x = (value.x > 255)  ? 255 : value.x;
-        value.y = (value.y > 255)  ? 255 : value.y;
-        value.z = (value.z > 255)  ? 255 : value.z;
-        // value[i] = (value[i] < 0)  ? 0 : value[i];
-        row_pointers[_height - 1 - y][3 * x + 0] = (unsigned char)value.x;
-        row_pointers[_height - 1 - y][3 * x + 1] = (unsigned char)value.y;
-        row_pointers[_height - 1 - y][3 * x + 2] = (unsigned char)value.z;
-      // }
-    }
+    for (int y = 0; y < _height; y++)
+      for (int x = 0; x < _width; x++)
+      {
+        int pos = (y*_height) + x;
+        float4 value = _img[pos] * 255;
+        // for (int i = 0; i < 3; i++)
+        // {
+          value.x = (value.x > 255)  ? 255 : value.x;
+          value.y = (value.y > 255)  ? 255 : value.y;
+          value.z = (value.z > 255)  ? 255 : value.z;
+          // value[i] = (value[i] < 0)  ? 0 : value[i];
+          row_pointers[_height - 1 - y][3 * x + 0] = (unsigned char)value.x;
+          row_pointers[_height - 1 - y][3 * x + 1] = (unsigned char)value.y;
+          row_pointers[_height - 1 - y][3 * x + 2] = (unsigned char)value.z;
+        // }
+      }
 
   png_structp png_ptr;
   png_infop info_ptr;
