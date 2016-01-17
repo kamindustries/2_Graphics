@@ -10,13 +10,14 @@
 /simpleGL_fbo
 /volumeFiltering
 */bin/
-*/*.xml
+*.xml
 */doc/
 *.bin
 *.png
+*.o
 */backup/
 */simpleGL
-*/*.o
+
 */data/fv*.txt
 */data/cuda*.txt
 */data/img*.txt
