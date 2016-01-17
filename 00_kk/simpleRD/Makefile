@@ -181,7 +181,7 @@ ALL_LDFLAGS += $(addprefix -Xlinker ,$(LDFLAGS))
 ALL_LDFLAGS += $(addprefix -Xlinker ,$(EXTRA_LDFLAGS))
 
 # Common includes and paths for CUDA
-INCLUDES  := -I../../common/inc
+INCLUDES  := -I../../../common/inc
 LIBRARIES :=
 
 ################################################################################
@@ -195,15 +195,16 @@ include ./findgllib.mk
 ifeq ($(TARGET_OS),darwin)
  # Mac OSX specific libraries and paths to include
  LIBRARIES += -L/System/Library/Frameworks/OpenGL.framework/Libraries
- LIBRARIES += -lGL -lGLU ../../common/lib/darwin/libGLEW.a
+ LIBRARIES += -lGL -lGLU ../../../common/lib/darwin/libGLEW.a
  ALL_LDFLAGS += -Xlinker -framework -Xlinker GLUT
 else
- LIBRARIES += -L../../common/lib/$(TARGET_OS)/$(TARGET_ARCH) $(GLLINK)
+ LIBRARIES += -L../../../common/lib/$(TARGET_OS)/$(TARGET_ARCH) $(GLLINK)
  LIBRARIES += -lGL -lGLU -lX11 -lXi -lXmu -lglut -lGLEW
 endif
 
 # Gencode arguments
 ifeq ($(TARGET_ARCH),armv7l)
+# CUDA compute capability; add as necessary for GPU targets
 # SMS ?= 20 30 32 35 37 50 52
 SMS ?= 30
 else
@@ -250,14 +251,14 @@ simpleGL.o:simpleGL.cu
 
 simpleGL: simpleGL.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES) -lpng lodepng.cpp
-	$(EXEC) mkdir -p ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
-	$(EXEC) cp $@ ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
+	$(EXEC) mkdir -p ../../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
+	$(EXEC) cp $@ ../../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 
 run: build
 	$(EXEC) ./simpleGL
 
 clean:
 	rm -f simpleGL simpleGL.o
-	rm -rf ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)/simpleGL
+	rm -rf ../../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)/simpleGL
 
 clobber: clean
