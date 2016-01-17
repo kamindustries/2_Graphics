@@ -444,7 +444,7 @@ static void draw_func( void ) {
   // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
   if (time_diff(time1,time2).tv_nsec > fr) {
     if (togSimulate) {
-      writeCpy(0,1,animFrameNum);
+      // writeCpy(0,1,animFrameNum);
       animFrameNum++;
     }
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
