@@ -15,10 +15,10 @@ int size = 0;
 int win_x = 512;
 int win_y = 512;
 float dt = 0.1;
-float diff = 0.00002f;
-float visc = 0.0f;
-float force = 5.0;
-float source_density = 100.0;
+float diff = 0.0001f;
+float visc = 0.000f;
+float force = 1.0;
+float source_density = 5.0;
 
 GLuint  bufferObj, bufferObj2;
 GLuint  textureID;
@@ -38,12 +38,14 @@ float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
 float4 *displayPtr, *toDisplay;
 
 bool hasRunOnce = false;
+bool writeData = false;
 
 // mouse controls
 static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
 int max_simulate = 0;
+bool togVelocity = true;
 
 int ID(int i, int j) { return (i+((N+2)*j)); }
 
@@ -53,12 +55,17 @@ int ID(int i, int j) { return (i+((N+2)*j)); }
 ///////////////////////////////////////////////////////////////////////////////
 // Initialize Variables
 ///////////////////////////////////////////////////////////////////////////////
-void initVariables() {
-  grid = dim3(DIM/16,DIM/16);
+void initVariables(int argc, char *argv[]) {
+  // grid = dim3(DIM/16,DIM/16);
+  // threads = dim3(16,16);
   threads = dim3(16,16);
+  grid.x = (DIM + threads.x - 1) / threads.x;
+  grid.y = (DIM + threads.y - 1) / threads.y;
 
   size = (N+2)*(N+2);
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+
+  writeData = argv[1];
 
   // Create the CUTIL timer
   sdkCreateTimer(&timer);
@@ -322,12 +329,50 @@ static void pre_display ( void ) {
 ///////////////////////////////////////////////////////////////////////////////
 // Draw
 ///////////////////////////////////////////////////////////////////////////////
+void draw_velocity()
+{
+	int i, j;
+	float x, y, h;
+
+	h = (float)1.0f/float(N);
+
+  float *u_cpu = (float*)malloc(sizeof(float)*size);
+  float *v_cpu = (float*)malloc(sizeof(float)*size);
+  cudaDeviceSynchronize();
+  checkCudaErrors(cudaMemcpy(u_cpu, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  checkCudaErrors(cudaMemcpy(v_cpu, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+
+  glDisable (GL_LIGHTING);
+  glDisable(GL_TEXTURE_2D);
+
+	glLineWidth ( .5f );
+  glColor3f ( 1.0f, 1.0f, 1.0f );
+
+	glBegin ( GL_LINES );
+		for ( i=1 ; i<=N ; i+=2 ) {
+			x = (i-0.5f)*h;
+			for ( j=1 ; j<=N ; j+=2 ) {
+				y = (j-0.5f)*h;
+        int id = ((i)+(N+2)*(j));
+        // if (abs(u_cpu[id])>.001 && abs(v_cpu[id])>0.001) {
+  				glVertex2f ( x, y );
+  				glVertex2f ( x+u_cpu[id], y+v_cpu[id] );
+        // }
+			}
+		}
+	glEnd ();
+
+  free(u_cpu);
+  free(v_cpu);
+}
+
 static void draw_func( void ) {
 
   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
 
   pre_display ();
 
+  glEnable (GL_TEXTURE_2D);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
@@ -343,6 +388,8 @@ static void draw_func( void ) {
   glVertex3f(1.0,1.0,0.0);
   glEnd();
 
+  if (togVelocity) draw_velocity();
+
   glutSwapBuffers();
 
   float fr = 1.0f/60.0f;
@@ -350,7 +397,7 @@ static void draw_func( void ) {
   // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
   if (time_diff(time1,time2).tv_nsec > fr) {
     if (togSimulate) {
-      writeCpy(0,1,animFrameNum);
+      if (writeData) writeCpy(0,1,animFrameNum);
       animFrameNum++;
     }
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
@@ -429,6 +476,10 @@ static void key_func( unsigned char key, int x, int y ) {
         if (visc <= 0.) visc = 0.;
         printf("Visc: %f\n", visc);
         break;
+    case 'v':
+      togVelocity = !togVelocity;
+      printf("toggle velocity: %d\n", togVelocity);
+      break;
     default:
         break;
   }
@@ -438,13 +489,15 @@ static void key_func( unsigned char key, int x, int y ) {
 // GLUT Mouse
 ///////////////////////////////////////////////////////////////////////////////
 void motion_func(int x, int y) {
+  // mouse_x_old = mouse_x;
+  // mouse_y_old = mouse_x;
   mouse_x = x;
   mouse_y = y;
 }
 
 void mouse_func ( int button, int state, int x, int y ) {
 	mouse_x_old = mouse_x = x;
-	mouse_y_old = mouse_x = y;
+	mouse_y_old = mouse_y = y;
 
 	mouse_down[button] = state == GLUT_DOWN;
 }
@@ -463,7 +516,7 @@ static void reshape_func ( int width, int height )
 int main(int argc, char *argv[]) {
 
   // initialize
-  initVariables();
+  initVariables(argc, argv);
   initGL(argc, argv);
   initCUDA();
 

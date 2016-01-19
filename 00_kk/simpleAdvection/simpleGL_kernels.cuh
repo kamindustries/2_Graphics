@@ -14,7 +14,7 @@
 #include <thrust/sort.h>
 #include <helper_math.h>
 
-#define     DIM    512
+#define     DIM    256
 #define     N    DIM-2
 
 // Get 1d index from 2d coords
@@ -24,15 +24,19 @@ __device__ int IX( int x, int y) {
   if (x < 0) x = DIM-1;
   if (y >= DIM) y = 0;
   if (y < 0) y = DIM-1;
-  return x + (y * blockDim.x * gridDim.x);
+
+  // return x + (y * blockDim.x * gridDim.x);
+  return y * DIM + x;
 }
 
 __device__ int getX() {
-  return threadIdx.x + (blockIdx.x * blockDim.x);
+  // return threadIdx.x + (blockIdx.x * blockDim.x);
+  return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
 __device__ int getY() {
-  return threadIdx.y + (blockIdx.y * blockDim.y);
+  // return threadIdx.y + (blockIdx.y * blockDim.y);
+  return blockIdx.y * blockDim.y + threadIdx.y;
 }
 
 // Set boundary conditions

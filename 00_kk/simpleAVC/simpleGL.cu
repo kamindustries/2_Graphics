@@ -5,7 +5,7 @@
 #include "lodepng.h"
 #include "simpleGL_kernels.cuh"
 
-// #include "particle.h"
+#include "particleSystem.h"
 
 #define MAX(a,b) ((a > b) ? a : b)
 #define SWAP(x0,x) {float *tmp=x0;x0=x;x=tmp;}
@@ -41,6 +41,7 @@ timespec time1, time2;
 timespec time_diff(timespec start, timespec end);
 
 float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
+float *u0_cpu, *v0_cpu;
 float *chemA, *chemA_prev, *chemB, *chemB_prev,  *laplacian;
 float4 *displayPtr, *toDisplay;
 
@@ -51,10 +52,14 @@ bool writeData = false;
 static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
+bool togVelocity = true;
+bool togDensity = true;
 bool togModBuoy = false;
 int max_simulate = 0;
 
 int ID(int i, int j) { return (i+((N+2)*j)); }
+
+ParticleSystem particleSystem;
 
 // Convert to webm:
 // png2yuv -I p -f 60 -b 1 -n 1628 -j cuda_x%05d.png > cuda_YUV.yuv
@@ -68,6 +73,12 @@ void initVariables(int argc, char *argv[]) {
 
   size = (N+2)*(N+2);
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+  u0_cpu = (float*)malloc(sizeof(float)*size);
+  v0_cpu = (float*)malloc(sizeof(float)*size);
+  for (int i = 0; i < size; i++){
+    u0_cpu[i] = 0.0;
+    v0_cpu[i] = 0.0;
+  }
 
   writeData = argv[1];
 
@@ -224,7 +235,7 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
   ClearArray<<<grid,threads>>>(_u, 0.0);
   ClearArray<<<grid,threads>>>(_v, 0.0);
 
-  DrawSquare<<<grid,threads>>>(_chemB, 1.0);
+  // DrawSquare<<<grid,threads>>>(_chemB, 1.0);
 
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
@@ -241,6 +252,8 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
   if ( mouse_down[0] ) {
     GetFromUI<<<grid,threads>>>(_u, i, j, x_diff * force);
     GetFromUI<<<grid,threads>>>(_v, i, j, y_diff * force);
+
+    particleSystem.addParticles((float)mouse_x/float(win_x), (float)(win_y-mouse_y)/float(win_y), 10);
   }
 
   if ( mouse_down[2]) {
@@ -302,29 +315,29 @@ void dens_step (  float *_chemA, float *_chemA0, float *_chemB, float *_chemB0,
   // diffuse_step( 0, _chemB, _chemB0, diff, dt);
 
   // Funky ARD-----------------------
-  AddSource<<<grid,threads>>>( _chemB, _chemB0, dt );
-  SWAP ( _chemA0, _chemA );
-  SWAP ( _chemB0, _chemB );
-  RD_step( 0,_chemA,_chemA0, _chemB, _chemB0, diff, dt);
-
-  // // Naive ARD-----------------------
-  // AddSource<<<grid,threads>>>(_chemB, _chemB0, dt );
-  // _chemA0 = _chemA;
-  // _chemB0 = _chemB;
-  // for (int i = 0; i < 10; i++){
-  //   Diffusion<<<grid,threads>>>(_chemA, laplacian, dA, dt);
-  //   AddLaplacian<<<grid,threads>>>(_chemA, laplacian);
-  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
-  //
-  //   Diffusion<<<grid,threads>>>(_chemB, laplacian, dB, dt);
-  //   AddLaplacian<<<grid,threads>>>(_chemB, laplacian);
-  //   ClearArray<<<grid,threads>>>(laplacian, 0.0);
-  //
-  //   React<<<grid,threads>>>( _chemA, _chemB, dt );
-  // }
-
+  // AddSource<<<grid,threads>>>( _chemB, _chemB0, dt );
   // SWAP ( _chemA0, _chemA );
-  // advect_step(0, _chemA, _chemA0, u, v, dt);
+  // SWAP ( _chemB0, _chemB );
+  // RD_step( 0,_chemA,_chemA0, _chemB, _chemB0, diff, dt);
+
+  // Naive ARD-----------------------
+  AddSource<<<grid,threads>>>(_chemB, _chemB0, dt );
+  _chemA0 = _chemA;
+  _chemB0 = _chemB;
+  for (int i = 0; i < 10; i++){
+    Diffusion<<<grid,threads>>>(_chemA, laplacian, dA, dt);
+    AddLaplacian<<<grid,threads>>>(_chemA, laplacian);
+    ClearArray<<<grid,threads>>>(laplacian, 0.0);
+
+    Diffusion<<<grid,threads>>>(_chemB, laplacian, dB, dt);
+    AddLaplacian<<<grid,threads>>>(_chemB, laplacian);
+    ClearArray<<<grid,threads>>>(laplacian, 0.0);
+
+    React<<<grid,threads>>>( _chemA, _chemB, dt );
+  }
+
+  SWAP ( _chemA0, _chemA );
+  advect_step(0, _chemA, _chemA0, u, v, dt);
   SWAP ( _chemB0, _chemB );
   advect_step(0, _chemB, _chemB0, u, v, dt);
 }
@@ -333,18 +346,18 @@ void vel_step ( float *u, float *v, float *u0, float *v0, float *dens, float vis
   AddSource<<<grid,threads>>>( u, u0, dt );
   AddSource<<<grid,threads>>>( v, v0, dt );
 
-  // add in vorticity confinement force
-  vorticityConfinement<<<grid,threads>>>(u0, v0, u, v);
-  AddSource<<<grid,threads>>>(u, u0, dt);
-  AddSource<<<grid,threads>>>(v, v0, dt);
-
-  // add in buoyancy force
-  // get average temperature
-  float Tamb = 0;
-    getSum<<<grid,threads>>>(v0, Tamb);
-    Tamb /= (DIM * DIM);
-  buoyancy<<<grid,threads>>>(v0, dens, Tamb, buoy);
-  AddSource<<<grid,threads>>>(v, v0, dt);
+  // // add in vorticity confinement force
+  // vorticityConfinement<<<grid,threads>>>(u0, v0, u, v);
+  // AddSource<<<grid,threads>>>(u, u0, dt);
+  // AddSource<<<grid,threads>>>(v, v0, dt);
+  //
+  // // add in buoyancy force
+  // // get average temperature
+  // float Tamb = 0;
+  //   getSum<<<grid,threads>>>(v0, Tamb);
+  //   Tamb /= (DIM * DIM);
+  // buoyancy<<<grid,threads>>>(v0, dens, Tamb, buoy);
+  // AddSource<<<grid,threads>>>(v, v0, dt);
 
   SWAP ( u0, u ); diffuse_step( 1, u, u0, visc, dt);
   SWAP ( v0, v ); diffuse_step( 2, v, v0, visc, dt);
@@ -390,52 +403,106 @@ static void simulate( void ){
   // glutPostRedisplay();
 }
 
-
+///////////////////////////////////////////////////////////////////////////////
+// Draw
+///////////////////////////////////////////////////////////////////////////////
 static void pre_display ( void ) {
   glViewport ( 0, 0, win_x, win_y );
   glMatrixMode ( GL_PROJECTION );
   glLoadIdentity ();
   gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
+  glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
   glClear(GL_COLOR_BUFFER_BIT);
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// Draw
-///////////////////////////////////////////////////////////////////////////////
-static void draw_func( void ) {
-
-  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
-
-  pre_display ();
-
+void draw_density()
+{
+  glEnable (GL_TEXTURE_2D);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
 
   glBegin(GL_QUADS);
-  glTexCoord2f( 0, 1.0f);
-  glVertex3f(0.0,1.0,0.0);
-  glTexCoord2f(0,0);
-  glVertex3f(0.0,0.0,0.0);
-  glTexCoord2f(1.0f,0);
-  glVertex3f(1.0f,0.0,0.0);
-  glTexCoord2f(1.0f,1.0f);
-  glVertex3f(1.0,1.0,0.0);
+    glTexCoord2f( 0, 1.0f);
+    glVertex3f(0.0,1.0,0.0);
+    glTexCoord2f(0,0);
+    glVertex3f(0.0,0.0,0.0);
+    glTexCoord2f(1.0f,0);
+    glVertex3f(1.0f,0.0,0.0);
+    glTexCoord2f(1.0f,1.0f);
+    glVertex3f(1.0,1.0,0.0);
   glEnd();
+}
+
+void draw_velocity()
+{
+	int i, j;
+	float x, y, h;
+
+	h = (float)1.0f/float(N);
+
+  float *u_cpu = (float*)malloc(sizeof(float)*size);
+  float *v_cpu = (float*)malloc(sizeof(float)*size);
+  checkCudaErrors(cudaMemcpy(u_cpu, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  checkCudaErrors(cudaMemcpy(v_cpu, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+
+  glDisable (GL_LIGHTING);
+  glDisable(GL_TEXTURE_2D);
+
+	glLineWidth ( .5f );
+  glColor3f ( 1.0f, 1.0f, 1.0f );
+
+	glBegin ( GL_LINES );
+		for ( i=1 ; i<=N ; i+=4 ) {
+			x = (i-0.5f)*h;
+			for ( j=1 ; j<=N ; j+=4 ) {
+				y = (j-0.5f)*h;
+        int id = ((i)+(N+2)*(j));
+				glVertex2f ( x, y );
+				// glVertex2f ( u0_cpu[id], v0_cpu[id] );
+				// glVertex2f ( x+.05, y+0.05 );
+				glVertex2f ( x+u_cpu[id], y+v_cpu[id] );
+				// glVertex2f ( u_cpu[id], v_cpu[id] );
+        u0_cpu[id] = u_cpu[id];
+        v0_cpu[id] = v_cpu[id];
+			}
+		}
+	glEnd ();
+
+  free(u_cpu);
+  free(v_cpu);
+}
+
+static void draw_func( void ) {
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
+
+  pre_display();
+
+  // glEnable(GL_BLEND);
+  // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // glBlendEquation(GL_FUNC_ADD);
+
+  if (togDensity) draw_density();
+  if (togVelocity) draw_velocity();
+
+  // glDisable(GL_BLEND);
+
+  // particleSystem.updateAndDraw(u, v, size, float(DIM));
 
   glutSwapBuffers();
+  glutPostRedisplay();
 
-  float fr = 1.0f/60.0f;
-  float df = float(time_diff(time1,time2).tv_nsec)/1000.0f;
-  // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
-  if (time_diff(time1,time2).tv_nsec > fr) {
-    if (togSimulate) {
-      if (writeData) writeCpy(0,1,animFrameNum);
-      animFrameNum++;
-    }
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
-    glutPostRedisplay(); // causes draw to loop forever
-  }
+  // float fr = 1.0f/60.0f;
+  // float df = float(time_diff(time1,time2).tv_nsec)/1000.0f;
+  // // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
+  // if (time_diff(time1,time2).tv_nsec > fr) {
+  //   if (togSimulate) {
+  //     if (writeData) writeCpy(0,1,animFrameNum);
+  //     animFrameNum++;
+  //   }
+  //   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
+  //   glutPostRedisplay(); // causes draw to loop forever
+  // }
   // glutPostRedisplay(); // causes draw to loop forever
 
 }
@@ -512,6 +579,14 @@ static void keyboard_func( unsigned char key, int x, int y ) {
     case 'b':
       togModBuoy = true;
       break;
+    case 'v':
+      togVelocity = !togVelocity;
+      printf("toggle velocity: %d\n", togVelocity);
+      break;
+    case 'd':
+      togDensity = !togDensity;
+      printf("toggle density: %d\n", togDensity);
+      break;
     default:
         break;
   }
@@ -547,8 +622,8 @@ void passive_motion_func(int x, int y) {
 }
 
 void mouse_func ( int button, int state, int x, int y ) {
-  mouse_x = x;
-  mouse_y = y;
+  mouse_x_old = mouse_x = x;
+	mouse_y_old = mouse_y = y;
 
 	mouse_down[button] = state == GLUT_DOWN;
 }
