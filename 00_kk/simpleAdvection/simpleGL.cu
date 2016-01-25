@@ -1,8 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "writePNG.h"
-#include "lodepng.h"
+#include "writeData.h"
 #include "simpleGL_kernels.cuh"
 
 #define MAX(a,b) ((a > b) ? a : b)
@@ -14,14 +12,16 @@ dim3 grid, threads;
 int size = 0;
 int win_x = 512;
 int win_y = 512;
+int internalFormat = 4;
 float dt = 0.1;
 float diff = 0.0001f;
 float visc = 0.000f;
 float force = 1.0;
-float source_density = 5.0;
+float source_density = 100.0;
 
 GLuint  bufferObj, bufferObj2;
 GLuint  textureID;
+GLuint FramebufferName, rndrTx, rndrDepthTx;
 cudaGraphicsResource_t resource1;
 
 float avgFPS = 0.0f;
@@ -29,13 +29,15 @@ int fpsCount = 0;        // FPS count for averaging
 int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
 int animFrameNum = 0;
+float framerate_sec = 1.0f/60.0f;
 
 StopWatchInterface *timer = NULL;
 timespec time1, time2;
 timespec time_diff(timespec start, timespec end);
 
 float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
-float4 *displayPtr, *toDisplay;
+float4 *displayPtr, *rndrTx_ptr;
+float *h_u, *h_v, *h_d;
 
 bool hasRunOnce = false;
 bool writeData = false;
@@ -45,6 +47,7 @@ static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
 int max_simulate = 0;
+bool togDensity = true;
 bool togVelocity = true;
 
 int ID(int i, int j) { return (i+((N+2)*j)); }
@@ -58,12 +61,22 @@ int ID(int i, int j) { return (i+((N+2)*j)); }
 void initVariables(int argc, char *argv[]) {
   // grid = dim3(DIM/16,DIM/16);
   // threads = dim3(16,16);
+
   threads = dim3(16,16);
   grid.x = (DIM + threads.x - 1) / threads.x;
   grid.y = (DIM + threads.y - 1) / threads.y;
 
   size = (N+2)*(N+2);
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+  rndrTx_ptr = (float4*)malloc(sizeof(float4)*win_x*win_y);
+  h_u = new float[size];
+  h_v = new float[size];
+  h_d = new float[size];
+  for (int i=0; i<size; i++){
+    h_u[i] = 0.0;
+    h_v[i] = 0.0;
+    h_d[i] = 0.0;
+  }
 
   writeData = argv[1];
 
@@ -78,23 +91,49 @@ void initGL(int argc, char *argv[]) {
   glutInit( &argc, argv );
   glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
   glutInitWindowPosition ( 0, 0 );
-  // glutInitWindowSize( DIM, DIM );
   glutInitWindowSize ( win_x, win_y );
   glutCreateWindow( "Simple Advection" );
   glewInit();
 
+  // Framebuffer
+  glGenFramebuffersEXT(1, &FramebufferName);
+  glBindFramebufferEXT(GL_FRAMEBUFFER, FramebufferName);
+
+  // Framebuffer's texture
+  glEnable(GL_TEXTURE_2D);
+  glGenTextures(1, &rndrTx);
+  glBindTexture(GL_TEXTURE_2D, rndrTx);
+  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, win_x, win_y, 0, GL_RGBA, GL_FLOAT, 0);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  // The depth buffer
+  glGenRenderbuffersEXT(1, &rndrDepthTx);
+  glBindRenderbufferEXT(GL_RENDERBUFFER, rndrDepthTx);
+  glRenderbufferStorageEXT(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, win_x, win_y);
+  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rndrDepthTx);
+  glFramebufferTextureEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rndrTx, 0);
+
+  // Set the list of draw buffers.
+  GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
+  glDrawBuffers(1, DrawBuffers); // "1" is the size of DrawBuffers
+
+  // Set up CUDA buffer object and bind texture to it
+  // Later we register a cuda graphics resource to this in order to write to a texture
   glGenBuffers( 1, &bufferObj );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj );
   glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, sizeof(float4) * DIM * DIM, NULL, GL_DYNAMIC_DRAW_ARB );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, 0 );
 
-  glEnable(GL_TEXTURE_2D);
   glGenTextures(1, &textureID);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, DIM, DIM, 0, GL_BGRA, GL_FLOAT, NULL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glBindTexture(GL_TEXTURE_2D, 0);
 
+  // Clean up
   glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
 	glClear ( GL_COLOR_BUFFER_BIT );
 	glutSwapBuffers ();
@@ -114,7 +153,9 @@ void initCUDA() {
   checkCudaErrors(cudaMalloc((void**)&dens, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&dens_prev, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&source, sizeof(float)*size ));
-  checkCudaErrors(cudaMalloc((void**)&toDisplay, sizeof(float4)*size ));
+
+  checkCudaErrors(cudaMemcpy(u, h_u, sizeof(float)*size, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(v, h_v, sizeof(float)*size, cudaMemcpyHostToDevice));
 }
 
 void initArrays() {
@@ -124,7 +165,6 @@ void initArrays() {
   ClearArray<<<grid,threads>>>(v_prev, 0.0);
   ClearArray<<<grid,threads>>>(dens, 0.0);
   ClearArray<<<grid,threads>>>(dens_prev, 0.0);
-  ClearArray<<<grid,threads>>>(toDisplay, 0.0);
 }
 
 void computeFPS() {
@@ -142,41 +182,6 @@ void computeFPS() {
   char fps[256];
   sprintf(fps, "Cuda GL Interop: %3.1f fps (Max 100Hz)", avgFPS);
   glutSetWindowTitle(fps);
-}
-
-///////////////////////////////////////
-// Write
-///////////////////////////////////////
-void write(const char* _filename, float4* _img) {
-    FILE* file;
-    file = fopen(_filename, "wb");
-
-    int totalCells = DIM * DIM;
-    // double* dataDouble = new double[totalCells * 3];
-    for (int i = 0; i < totalCells; i++) {
-      fprintf(file, "%f\n", _img[i].x);
-      fprintf(file, "%f\n", _img[i].y);
-      fprintf(file, "%f\n", _img[i].z);
-    }
-
-    fclose(file);
-    printf("Wrote file!\n");
-}
-
-void writeCpy (bool _write_txt = true, bool _write_img = true, int _increment = frameNum) {
-  float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-  checkCudaErrors (cudaMemcpy(img_ptr, displayPtr, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-  if (_write_txt){
-    char filename_txt[1024 * sizeof(int) / 3 + 2];
-    sprintf(filename_txt, "data/cuda_x%d.txt", _increment);
-    write(filename_txt, img_ptr);
-  }
-  if (_write_img){
-    char filename_png[2048 * sizeof(int) / 3 + 2];
-    sprintf(filename_png, "data/images/cuda_x%05d.png", _increment);
-    writePNG(filename_png, img_ptr, DIM, DIM);
-  }
-  free(img_ptr);
 }
 
 timespec time_diff(timespec start, timespec end)
@@ -204,6 +209,8 @@ void get_from_UI(float *d, float *u, float *v) {
   ClearArray<<<grid,threads>>>(d, 0.0);
   ClearArray<<<grid,threads>>>(u, 0.0);
   ClearArray<<<grid,threads>>>(v, 0.0);
+
+  DrawSquare<<<grid,threads>>>(d);
 
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
@@ -281,8 +288,6 @@ void vel_step ( float *u, float *v, float *u0, float *v0, float visc, float dt )
   SWAP ( v0, v );
   advect_step(1, u, u0, u0, v0, dt);
   advect_step(2, v, v0, u0, v0, dt);
-  // Advect<<<grid,threads>>>( 1, u, u0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(1, u);
-  // Advect<<<grid,threads>>>( 2, v, v0, u0, v0, dt ); SetBoundary<<<grid,threads>>>(2, v);
 
   proj_step( u, v, u0, v0);
 }
@@ -304,106 +309,120 @@ static void simulate( void ){
     vel_step( u, v, u_prev, v_prev, visc, dt );
     dens_step( dens, dens_prev, u, v, diff, dt );
     MakeColor<<<grid,threads>>>(dens, displayPtr);
+    // MakeColor<<<grid,threads>>>(u, v, displayPtr);
   }
 
   size_t  sizeT;
   cudaGraphicsMapResources( 1, &resource1, 0 );
   checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, resource1));
-  // checkCudaErrors(cudaMemcpy(displayPtr, toDisplay, sizeof(float4)*size, cudaMemcpyDeviceToHost ));
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
 
   sdkStopTimer(&timer);
   computeFPS();
-  // glutPostRedisplay();
-}
-
-
-static void pre_display ( void ) {
-  glViewport ( 0, 0, win_x, win_y );
-  glMatrixMode ( GL_PROJECTION );
-  glLoadIdentity ();
-  gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
-  glClear(GL_COLOR_BUFFER_BIT);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // Draw
 ///////////////////////////////////////////////////////////////////////////////
-void draw_velocity()
-{
-	int i, j;
-	float x, y, h;
-
-	h = (float)1.0f/float(N);
-
-  float *u_cpu = (float*)malloc(sizeof(float)*size);
-  float *v_cpu = (float*)malloc(sizeof(float)*size);
-  cudaDeviceSynchronize();
-  checkCudaErrors(cudaMemcpy(u_cpu, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-  checkCudaErrors(cudaMemcpy(v_cpu, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-
-  glDisable (GL_LIGHTING);
-  glDisable(GL_TEXTURE_2D);
-
-	glLineWidth ( .5f );
-  glColor3f ( 1.0f, 1.0f, 1.0f );
-
-	glBegin ( GL_LINES );
-		for ( i=1 ; i<=N ; i+=2 ) {
-			x = (i-0.5f)*h;
-			for ( j=1 ; j<=N ; j+=2 ) {
-				y = (j-0.5f)*h;
-        int id = ((i)+(N+2)*(j));
-        // if (abs(u_cpu[id])>.001 && abs(v_cpu[id])>0.001) {
-  				glVertex2f ( x, y );
-  				glVertex2f ( x+u_cpu[id], y+v_cpu[id] );
-        // }
-			}
-		}
-	glEnd ();
-
-  free(u_cpu);
-  free(v_cpu);
+static void pre_display ( void ) {
+  // bind a framebuffer and render everything afterwards into that
+  glBindFramebufferEXT(GL_FRAMEBUFFER, FramebufferName);
+  glViewport ( 0, 0, win_x, win_y );
+  glMatrixMode ( GL_PROJECTION );
+  glLoadIdentity ();
+  gluOrtho2D ( 0.0, 1.0, 0.0, 1.0 );
+  glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
+  glClear(GL_COLOR_BUFFER_BIT);
 }
 
-static void draw_func( void ) {
+static void post_display ( void ) {
+  // unbind the framebuffer and draw its texture
+  glBindFramebufferEXT(GL_FRAMEBUFFER, 0);
 
-  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
+  glColor3f(1,1,1);
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, rndrTx);
+  glBegin(GL_QUADS);
+    glTexCoord2f( 0, 1.0f);
+    glVertex3f(0.0,1.0,0.0);
+    glTexCoord2f(0,0);
+    glVertex3f(0.0,0.0,0.0);
+    glTexCoord2f(1.0f,0);
+    glVertex3f(1.0f,0.0,0.0);
+    glTexCoord2f(1.0f,1.0f);
+    glVertex3f(1.0,1.0,0.0);
+  glEnd();
 
-  pre_display ();
+  glutSwapBuffers();
 
+  // now handle looping and writing data
+  if (time_diff(time1,time2).tv_nsec > framerate_sec) {
+    if (togSimulate) {
+      if (writeData) {
+        // glReadPixels(0, 0, win_x, win_y, GL_RGBA, GL_FLOAT, rndrTx_ptr);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, rndrTx_ptr);
+        writeImage(rndrTx_ptr, animFrameNum, win_x, win_y, internalFormat);
+      }
+      animFrameNum++;
+      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
+      glutPostRedisplay(); // causes draw to loop forever
+    }
+  }
+}
+
+void draw_density() {
   glEnable (GL_TEXTURE_2D);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
 
   glBegin(GL_QUADS);
-  glTexCoord2f( 0, 1.0f);
-  glVertex3f(0.0,1.0,0.0);
-  glTexCoord2f(0,0);
-  glVertex3f(0.0,0.0,0.0);
-  glTexCoord2f(1.0f,0);
-  glVertex3f(1.0f,0.0,0.0);
-  glTexCoord2f(1.0f,1.0f);
-  glVertex3f(1.0,1.0,0.0);
+    glTexCoord2f( 0, 1.0f);
+    glVertex3f(0.0,1.0,0.0);
+    glTexCoord2f(0,0);
+    glVertex3f(0.0,0.0,0.0);
+    glTexCoord2f(1.0f,0);
+    glVertex3f(1.0f,0.0,0.0);
+    glTexCoord2f(1.0f,1.0f);
+    glVertex3f(1.0,1.0,0.0);
   glEnd();
+}
 
+void draw_velocity() {
+	float h = (float)1.0f/float(N);
+
+  cudaDeviceSynchronize();
+  checkCudaErrors(cudaMemcpy(h_u, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  checkCudaErrors(cudaMemcpy(h_v, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+
+  glDisable(GL_LIGHTING);
+  glDisable(GL_TEXTURE_2D);
+	glLineWidth ( 1.0f );
+  glColor3f ( 1.0f, 1.0f, 1.0f );
+
+	glBegin ( GL_LINES );
+		for ( int i=0 ; i<DIM ; i+=2 ) {
+			float x = (i-0.5f)*h;
+			for ( int j=0 ; j<DIM ; j+=2 ) {
+				float y = (j-0.5f)*h;
+        int id = ((i)+DIM*(j));
+  				glVertex2f ( x, y );
+  				glVertex2f ( x+h_u[id], y+h_v[id] );
+			}
+		}
+	glEnd ();
+}
+
+static void draw_func( void ) {
+
+  clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time2);
+
+  pre_display();
+
+  if (togDensity) draw_density();
   if (togVelocity) draw_velocity();
 
-  glutSwapBuffers();
-
-  float fr = 1.0f/60.0f;
-  float df = float(time_diff(time1,time2).tv_nsec)/1000.0f;
-  // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
-  if (time_diff(time1,time2).tv_nsec > fr) {
-    if (togSimulate) {
-      if (writeData) writeCpy(0,1,animFrameNum);
-      animFrameNum++;
-    }
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
-    glutPostRedisplay(); // causes draw to loop forever
-  }
-  // glutPostRedisplay(); // causes draw to loop forever
+  post_display();
 
 }
 
@@ -413,14 +432,6 @@ static void draw_func( void ) {
 // Close
 ///////////////////////////////////////
 static void FreeResource( void ){
-  // checkCudaErrors(cudaFree(u));
-  // checkCudaErrors(cudaFree(u_prev));
-  // checkCudaErrors(cudaFree(v));
-  // checkCudaErrors(cudaFree(v_prev));
-  // checkCudaErrors(cudaFree(dens));
-  // checkCudaErrors(cudaFree(dens_prev));
-  // checkCudaErrors(cudaFree(source));
-  // checkCudaErrors(cudaFree(toDisplay));
   sdkDeleteTimer(&timer);
   glDeleteBuffers(1, &bufferObj);
 }
@@ -454,7 +465,7 @@ static void key_func( unsigned char key, int x, int y ) {
         draw_func();
         break;
     case '.':
-        writeCpy();
+        // writeImage(frameNum);
         break;
     case ']':
         diff += 0.000001f;
@@ -476,6 +487,10 @@ static void key_func( unsigned char key, int x, int y ) {
         if (visc <= 0.) visc = 0.;
         printf("Visc: %f\n", visc);
         break;
+    case 'd':
+      togDensity = !togDensity;
+      printf("toggle density: %d\n", togDensity);
+      break;
     case 'v':
       togVelocity = !togVelocity;
       printf("toggle velocity: %d\n", togVelocity);
@@ -489,8 +504,6 @@ static void key_func( unsigned char key, int x, int y ) {
 // GLUT Mouse
 ///////////////////////////////////////////////////////////////////////////////
 void motion_func(int x, int y) {
-  // mouse_x_old = mouse_x;
-  // mouse_y_old = mouse_x;
   mouse_x = x;
   mouse_y = y;
 }
@@ -520,10 +533,8 @@ int main(int argc, char *argv[]) {
   initGL(argc, argv);
   initCUDA();
 
-  // pre_display ();
 
-
-// set up GLUT and kick off main loop
+  // set up GLUT and kick off main loop
   // glutCloseFunc( FreeResource );
   glutKeyboardFunc( key_func );
   glutMouseFunc ( mouse_func );

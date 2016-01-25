@@ -14,7 +14,7 @@
 #include <thrust/sort.h>
 #include <helper_math.h>
 
-#define     DIM    256
+#define     DIM    512
 #define     N    DIM-2
 
 // Get 1d index from 2d coords
@@ -30,13 +30,13 @@ __device__ int IX( int x, int y) {
 }
 
 __device__ int getX() {
-  // return threadIdx.x + (blockIdx.x * blockDim.x);
-  return blockIdx.x * blockDim.x + threadIdx.x;
+  return threadIdx.x + (blockIdx.x * blockDim.x);
+  // return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
 __device__ int getY() {
-  // return threadIdx.y + (blockIdx.y * blockDim.y);
-  return blockIdx.y * blockDim.y + threadIdx.y;
+  return threadIdx.y + (blockIdx.y * blockDim.y);
+  // return blockIdx.y * blockDim.y + threadIdx.y;
 }
 
 // Set boundary conditions
@@ -224,4 +224,16 @@ __global__ void MakeColor( float *data, float4 *_toDisplay) {
 
   float Cd = data[id];
   _toDisplay[id] = make_float4(Cd, Cd, Cd, 1.0);
+}
+__global__ void MakeColor( float *data0, float *data1, float4 *_toDisplay) {
+  int x = getX();
+  int y = getY();
+  int id = IX(x,y);
+
+  float R = (abs(data0[id]) + abs(data1[id]));
+  R = (R*R)*1000;
+  float G = R;
+  if (G < 0.001) G*= 1000.0;
+
+  _toDisplay[id] = make_float4(R, R, R, 1.0);
 }
