@@ -7,14 +7,12 @@ using namespace std;
 // http://zarb.org/~gc/html/libpng.html
 ///////////////////////////////////////////////////////////////////////
 void writePNG(string _filename, float4* _img, int _width, int _height, int _stride) {
-  printf("Writing out PNG file: %s\n", _filename.c_str());
 
   // copy image data into pointers
   png_bytep* row_pointers;
   row_pointers = (png_bytep*) malloc(sizeof(png_bytep) * _height);
   for (int y = 0; y < _height; y++) {
     row_pointers[y] = (png_byte*) malloc(sizeof(png_byte) * _width * 3);
-    // row_pointers[y] = (png_byte*) malloc(sizeof(png_byte) * _width * _stride);
   }
   for (int y = 0; y < _height; y++) {
     for (int x = 0; x < _width; x++) {
@@ -39,8 +37,10 @@ void writePNG(string _filename, float4* _img, int _width, int _height, int _stri
 
   // create file
   FILE *fp = fopen(_filename.c_str(), "wb");
-  // if (fp == NULL)
-  //   printf("[write_png_file] File %s could not be opened for writing\n", _filename.c_str());
+  if (fp == NULL) {
+    printf("[write_png_file] File %s could not be opened for writing\n", _filename.c_str());
+    return;
+  }
 
   // initialize stuff
   png_ptr = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
@@ -85,6 +85,8 @@ void writePNG(string _filename, float4* _img, int _width, int _height, int _stri
   for (int y=0; y<_height; y++)
     free(row_pointers[y]);
   free(row_pointers);
+
+  printf("Wrote PNG file: %s\n", _filename.c_str());
 
   fclose(fp);
 }

@@ -24,6 +24,7 @@ __device__ int IX( int x, int y) {
   if (x < 0) x = DIM-1;
   if (y >= DIM) y = 0;
   if (y < 0) y = DIM-1;
+  // return y * DIM + x;
   return x + (y * blockDim.x * gridDim.x);
 }
 
@@ -371,8 +372,10 @@ __global__ void React( float *_chemA, float *_chemB, float dt) {
   _chemB[id] += (dt * reactionB);
 }
 
-// really dont like that i have to do this...
-//
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
 __global__ void MakeColor( float *data, float4 *_toDisplay) {
   int x = getX();
   int y = getY();
@@ -380,4 +383,37 @@ __global__ void MakeColor( float *data, float4 *_toDisplay) {
 
   float Cd = data[id];
   _toDisplay[id] = make_float4(Cd, Cd, Cd, 1.0);
+}
+
+__global__ void MakeColor( float *data0, float *data1, float4 *_toDisplay) {
+  int x = getX();
+  int y = getY();
+  int id = IX(x,y);
+
+  float R = (abs(data0[id]) + abs(data1[id]));
+  R = (R*R)*1000;
+  float G = R;
+  if (G < 0.001) G*= 1000.0;
+
+  _toDisplay[id] = make_float4(R, R, R, 1.0);
+}
+
+__global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
+  int i = getX();
+  int j = getY();
+  int id = IX(i,j);
+  int idVert = id*2;
+
+  float h = (float)1.0f/float(DIM);
+  float x = (float)(i - 0.5f) * h;
+  float y = (float)(j - 0.5f) * h;
+
+  if (i%4==0 && j%4==0) {
+    _x[idVert+0] = make_float4(x,y,0.0,1.0);
+    _x[idVert+1] = make_float4(x+_u[id],y+_v[id],0.0,1.0);
+  }
+  else {
+    _x[idVert+0] = make_float4(0.0,0.0,0.0,1.0);
+    _x[idVert+1] = make_float4(0.0,0.0,0.0,1.0);
+  }
 }

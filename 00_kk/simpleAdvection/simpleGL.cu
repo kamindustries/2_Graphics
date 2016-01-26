@@ -12,13 +12,15 @@ dim3 grid, threads;
 int size = 0;
 int win_x = 512;
 int win_y = 512;
-int internalFormat = 4;
 int numVertices = DIM * DIM * 2;
+int internalFormat = 4;
+
 float dt = 0.1;
 float diff = 0.00001f;
 float visc = 0.000f;
 float force = 5.0;
 float source_density = 1.0;
+const char *outputImagePath = "data/images/test/test.";
 
 GLuint  bufferObj;
 GLuint  textureID, vertexArrayID;
@@ -26,7 +28,7 @@ GLuint fboID, fboTxID, fboDepthTxID;
 cudaGraphicsResource_t cgrTxData, cgrVertData;
 
 float *u, *v, *u_prev, *v_prev, *dens, *dens_prev;
-float4 *displayPtr, *fboPtr, *displayVertPtr;
+float4 *displayPtr, *displayVertPtr, *fboPtr;
 
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
@@ -63,7 +65,7 @@ void initVariables(int argc, char *argv[]) {
   grid.x = (DIM + threads.x - 1) / threads.x;
   grid.y = (DIM + threads.y - 1) / threads.y;
 
-  size = DIM*DIM;p
+  size = DIM*DIM;
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
   displayVertPtr = (float4*)malloc(sizeof(float4)*numVertices);
   fboPtr = (float4*)malloc(sizeof(float4)*win_x*win_y);
@@ -130,7 +132,6 @@ void initGL(int argc, char *argv[]) {
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glBindTexture(GL_TEXTURE_2D, 0);
-
 
   // Clean up
   glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
@@ -359,7 +360,7 @@ static void post_display ( void ) {
     if (togSimulate) {
       if (writeData) {
         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, fboPtr);
-        writeImage(fboPtr, animFrameNum, win_x, win_y, internalFormat);
+        writeImage(outputImagePath, fboPtr, animFrameNum, win_x, win_y, internalFormat);
       }
       animFrameNum++;
       clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);

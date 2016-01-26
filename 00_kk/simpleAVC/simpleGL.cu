@@ -1,10 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
-
-#include "writePNG.h"
-#include "lodepng.h"
+#include "writeData.h"
 #include "simpleGL_kernels.cuh"
-
 #include "particleSystem.h"
 
 #define MAX(a,b) ((a > b) ? a : b)
@@ -16,48 +13,49 @@ dim3 grid, threads;
 int size = 0;
 int win_x = 512;
 int win_y = 512;
+int numVertices = DIM * DIM * 2;
+int internalFormat = 4;
+
 float dt = 0.1;
-float diff = 0.00002f;
-float visc = 0.0f;
+float diff = 0.00001f;
+float visc = 0.000f;
 float force = 5.0;
 float buoy = 0.0;
 float source_density = 5.0;
-// diffusion constants
-float dA = 0.0002;
+float dA = 0.0002; // diffusion constants
 float dB = 0.00001;
+const char *outputImagePath = "data/images/test/test.";
 
-GLuint  bufferObj, bufferObj2;
-GLuint  textureID;
-cudaGraphicsResource_t resource1;
+GLuint  bufferObj;
+GLuint  textureID, vertexArrayID;
+GLuint fboID, fboTxID, fboDepthTxID;
+cudaGraphicsResource_t cgrTxData, cgrVertData;
+
+float *u, *v, *u_prev, *v_prev, *dens, *dens_prev;
+float *chemA, *chemA_prev, *chemB, *chemB_prev, *laplacian;
+float4 *displayPtr, *displayVertPtr, *fboPtr;
 
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
 int fpsLimit = 1;        // FPS limit for sampling
 int frameNum = 0;
 int animFrameNum = 0;
+float framerate_sec = 1.0f/60.0f;
 
 StopWatchInterface *timer = NULL;
 timespec time1, time2;
 timespec time_diff(timespec start, timespec end);
 
-float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
-float *u0_cpu, *v0_cpu;
-float *chemA, *chemA_prev, *chemB, *chemB_prev,  *laplacian;
-float4 *displayPtr, *toDisplay;
-
-bool hasRunOnce = false;
-bool writeData = false;
-
 // mouse controls
 static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
-bool togVelocity = true;
 bool togDensity = true;
+bool togVelocity = true;
 bool togModBuoy = false;
-int max_simulate = 0;
+bool hasRunOnce = false;
+bool writeData = false;
 
-int ID(int i, int j) { return (i+((N+2)*j)); }
 
 ParticleSystem particleSystem;
 
@@ -68,17 +66,18 @@ ParticleSystem particleSystem;
 // Initialize Variables
 ///////////////////////////////////////////////////////////////////////////////
 void initVariables(int argc, char *argv[]) {
-  grid = dim3(DIM/16,DIM/16);
-  threads = dim3(16,16);
+  // grid = dim3(DIM/16,DIM/16);
+  // threads = dim3(16,16);
 
-  size = (N+2)*(N+2);
+  // possibly works for non-powers of two?
+  threads = dim3(16,16);
+  grid.x = (DIM + threads.x - 1) / threads.x;
+  grid.y = (DIM + threads.y - 1) / threads.y;
+
+  size = DIM*DIM;
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-  u0_cpu = (float*)malloc(sizeof(float)*size);
-  v0_cpu = (float*)malloc(sizeof(float)*size);
-  for (int i = 0; i < size; i++){
-    u0_cpu[i] = 0.0;
-    v0_cpu[i] = 0.0;
-  }
+  displayVertPtr = (float4*)malloc(sizeof(float4)*numVertices);
+  fboPtr = (float4*)malloc(sizeof(float4)*win_x*win_y);
 
   writeData = argv[1];
 
@@ -93,23 +92,57 @@ void initGL(int argc, char *argv[]) {
   glutInit( &argc, argv );
   glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
   glutInitWindowPosition ( 0, 0 );
-  // glutInitWindowSize( DIM, DIM );
   glutInitWindowSize ( win_x, win_y );
   glutCreateWindow( "Simple Advection" );
   glewInit();
 
+  // Framebuffer
+  glGenFramebuffersEXT(1, &fboID);
+  glBindFramebufferEXT(GL_FRAMEBUFFER, fboID);
+
+  // Framebuffer's texture
+  glEnable(GL_TEXTURE_2D);
+  glGenTextures(1, &fboTxID);
+  glBindTexture(GL_TEXTURE_2D, fboTxID);
+  glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, win_x, win_y, 0, GL_RGBA, GL_FLOAT, 0);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glBindTexture(GL_TEXTURE_2D, 0);
+
+  // The depth buffer
+  glGenRenderbuffersEXT(1, &fboDepthTxID);
+  glBindRenderbufferEXT(GL_RENDERBUFFER, fboDepthTxID);
+  glRenderbufferStorageEXT(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, win_x, win_y);
+  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fboDepthTxID);
+  glFramebufferTextureEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, fboTxID, 0);
+
+  // Set the list of draw buffers.
+  GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
+  glDrawBuffers(1, DrawBuffers); // "1" is the size of DrawBuffers
+
+  // Set up CUDA buffer object and bind texture to it
+  // Later we register a cuda graphics resource to this in order to write to a texture
   glGenBuffers( 1, &bufferObj );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj );
   glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, sizeof(float4) * DIM * DIM, NULL, GL_DYNAMIC_DRAW_ARB );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, 0 );
 
-  glEnable(GL_TEXTURE_2D);
+  // Vertex buffer
+  // Each vertex contains 3 floating point coordinates (x,y,z) and 4 color bytes (RGBA)
+  // total 16 bytes per vertex
+  glGenBuffers(1, &vertexArrayID);
+  glBindBuffer( GL_ARRAY_BUFFER, vertexArrayID);
+  glBufferData( GL_ARRAY_BUFFER, sizeof(float4)*numVertices, NULL, GL_DYNAMIC_DRAW_ARB );
+  glBindBuffer( GL_ARRAY_BUFFER, 0 );
+
   glGenTextures(1, &textureID);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, DIM, DIM, 0, GL_BGRA, GL_FLOAT, NULL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glBindTexture(GL_TEXTURE_2D, 0);
 
+  // Clean up
   glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
 	glClear ( GL_COLOR_BUFFER_BIT );
 	glutSwapBuffers ();
@@ -119,8 +152,10 @@ void initGL(int argc, char *argv[]) {
 }
 
 void initCUDA() {
-  checkCudaErrors(cudaGLSetGLDevice( 0 ));
-  cudaGraphicsGLRegisterBuffer( &resource1, bufferObj, cudaGraphicsMapFlagsWriteDiscard );
+  checkCudaErrors( cudaSetDevice(gpuGetMaxGflopsDeviceId()) );
+  checkCudaErrors( cudaGLSetGLDevice(gpuGetMaxGflopsDeviceId()) );
+  cudaGraphicsGLRegisterBuffer( &cgrTxData, bufferObj, cudaGraphicsMapFlagsWriteDiscard );
+  cudaGraphicsGLRegisterBuffer( &cgrVertData, vertexArrayID, cudaGraphicsMapFlagsWriteDiscard );
 
   checkCudaErrors(cudaMalloc((void**)&u, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&u_prev, sizeof(float)*size ));
@@ -128,8 +163,6 @@ void initCUDA() {
   checkCudaErrors(cudaMalloc((void**)&v_prev, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&dens, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&dens_prev, sizeof(float)*size ));
-  checkCudaErrors(cudaMalloc((void**)&source, sizeof(float)*size ));
-  checkCudaErrors(cudaMalloc((void**)&toDisplay, sizeof(float4)*size ));
 
   checkCudaErrors(cudaMalloc((void**)&chemA, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&chemA_prev, sizeof(float)*size ));
@@ -145,15 +178,12 @@ void initArrays() {
   ClearArray<<<grid,threads>>>(v_prev, 0.0);
   ClearArray<<<grid,threads>>>(dens, 0.0);
   ClearArray<<<grid,threads>>>(dens_prev, 0.0);
-  ClearArray<<<grid,threads>>>(toDisplay, 0.0);
 
   ClearArray<<<grid,threads>>>(chemA, 1.0);
   ClearArray<<<grid,threads>>>(chemA_prev, 1.0);
   ClearArray<<<grid,threads>>>(chemB, 0.0);
   ClearArray<<<grid,threads>>>(chemB_prev, 0.0);
   ClearArray<<<grid,threads>>>(laplacian, 0.0);
-
-  buoy = 0.0;
 }
 
 void computeFPS() {
@@ -171,41 +201,6 @@ void computeFPS() {
   char fps[256];
   sprintf(fps, "Cuda GL Interop: %3.1f fps (Max 100Hz)", avgFPS);
   glutSetWindowTitle(fps);
-}
-
-///////////////////////////////////////
-// Write
-///////////////////////////////////////
-void write(const char* _filename, float4* _img) {
-    FILE* file;
-    file = fopen(_filename, "wb");
-
-    int totalCells = DIM * DIM;
-    // double* dataDouble = new double[totalCells * 3];
-    for (int i = 0; i < totalCells; i++) {
-      fprintf(file, "%f\n", _img[i].x);
-      fprintf(file, "%f\n", _img[i].y);
-      fprintf(file, "%f\n", _img[i].z);
-    }
-
-    fclose(file);
-    printf("Wrote file!\n");
-}
-
-void writeCpy (bool _write_txt = true, bool _write_img = true, int _increment = frameNum) {
-  float4* img_ptr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-  checkCudaErrors (cudaMemcpy(img_ptr, displayPtr, sizeof(float4)*DIM*DIM, cudaMemcpyDeviceToHost ));
-  if (_write_txt){
-    char filename_txt[1024 * sizeof(int) / 3 + 2];
-    sprintf(filename_txt, "data/cuda_x%d.txt", _increment);
-    write(filename_txt, img_ptr);
-  }
-  if (_write_img){
-    char filename_png[2048 * sizeof(int) / 3 + 2];
-    sprintf(filename_png, "data/images/cuda_x%05d.png", _increment);
-    writePNG(filename_png, img_ptr, DIM, DIM);
-  }
-  free(img_ptr);
 }
 
 timespec time_diff(timespec start, timespec end)
@@ -228,14 +223,12 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
 
   int i, j = (N+2)*(N+2);
 
-  // which is faster?
-  // ClearThreeArrays<<<grid,threads>>>(d, _u, _v);
   ClearArray<<<grid,threads>>>(_chemA, 1.0);
   ClearArray<<<grid,threads>>>(_chemB, 0.0);
   ClearArray<<<grid,threads>>>(_u, 0.0);
   ClearArray<<<grid,threads>>>(_v, 0.0);
 
-  // DrawSquare<<<grid,threads>>>(_chemB, 1.0);
+  DrawSquare<<<grid,threads>>>(_chemB, 1.0);
 
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
@@ -346,18 +339,18 @@ void vel_step ( float *u, float *v, float *u0, float *v0, float *dens, float vis
   AddSource<<<grid,threads>>>( u, u0, dt );
   AddSource<<<grid,threads>>>( v, v0, dt );
 
-  // // add in vorticity confinement force
-  // vorticityConfinement<<<grid,threads>>>(u0, v0, u, v);
-  // AddSource<<<grid,threads>>>(u, u0, dt);
-  // AddSource<<<grid,threads>>>(v, v0, dt);
-  //
-  // // add in buoyancy force
-  // // get average temperature
-  // float Tamb = 0;
-  //   getSum<<<grid,threads>>>(v0, Tamb);
-  //   Tamb /= (DIM * DIM);
-  // buoyancy<<<grid,threads>>>(v0, dens, Tamb, buoy);
-  // AddSource<<<grid,threads>>>(v, v0, dt);
+  // add in vorticity confinement force
+  vorticityConfinement<<<grid,threads>>>(u0, v0, u, v);
+  AddSource<<<grid,threads>>>(u, u0, dt);
+  AddSource<<<grid,threads>>>(v, v0, dt);
+
+  // add in buoyancy force
+  // get average temperature
+  float Tamb = 0;
+    getSum<<<grid,threads>>>(v0, Tamb);
+    Tamb /= (DIM * DIM);
+  buoyancy<<<grid,threads>>>(v0, dens, Tamb, buoy);
+  AddSource<<<grid,threads>>>(v, v0, dt);
 
   SWAP ( u0, u ); diffuse_step( 1, u, u0, visc, dt);
   SWAP ( v0, v ); diffuse_step( 2, v, v0, visc, dt);
@@ -384,29 +377,33 @@ static void simulate( void ){
     hasRunOnce = true;
   }
 
-  // if (frameNum > 0 && togSimulate) {
-  if (togSimulate) {
+  if (frameNum > 0 && togSimulate) {
     get_from_UI(chemA_prev, chemB_prev, u_prev, v_prev);
     vel_step( u, v, u_prev, v_prev, chemB, visc, dt );
     dens_step( chemA, chemA_prev, chemB, chemB_prev, u, v, diff, dt );
     MakeColor<<<grid,threads>>>(chemB, displayPtr);
+    MakeVerticesKernel<<<grid,threads>>>(displayVertPtr, u, v);
   }
 
   size_t  sizeT;
-  cudaGraphicsMapResources( 1, &resource1, 0 );
-  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, resource1));
-  // checkCudaErrors(cudaMemcpy(displayPtr, toDisplay, sizeof(float4)*size, cudaMemcpyDeviceToHost ));
-  checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
+  cudaGraphicsMapResources( 1, &cgrTxData, 0 );
+  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, cgrTxData));
+  checkCudaErrors(cudaGraphicsUnmapResources( 1, &cgrTxData, 0 ));
+
+  cudaGraphicsMapResources( 1, &cgrVertData, 0 );
+  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayVertPtr, &sizeT, cgrVertData));
+  checkCudaErrors(cudaGraphicsUnmapResources( 1, &cgrVertData, 0 ));
 
   sdkStopTimer(&timer);
   computeFPS();
-  // glutPostRedisplay();
 }
 
 ///////////////////////////////////////////////////////////////////////////////
 // Draw
 ///////////////////////////////////////////////////////////////////////////////
 static void pre_display ( void ) {
+  // bind a framebuffer and render everything afterwards into that
+  glBindFramebufferEXT(GL_FRAMEBUFFER, fboID);
   glViewport ( 0, 0, win_x, win_y );
   glMatrixMode ( GL_PROJECTION );
   glLoadIdentity ();
@@ -415,13 +412,13 @@ static void pre_display ( void ) {
   glClear(GL_COLOR_BUFFER_BIT);
 }
 
-void draw_density()
-{
-  glEnable (GL_TEXTURE_2D);
-  glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
-  glBindTexture(GL_TEXTURE_2D, textureID);
-  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
+static void post_display ( void ) {
+  // unbind the framebuffer and draw its texture
+  glBindFramebufferEXT(GL_FRAMEBUFFER, 0);
 
+  glColor3f(1,1,1);
+  glEnable(GL_TEXTURE_2D);
+  glBindTexture(GL_TEXTURE_2D, fboTxID);
   glBegin(GL_QUADS);
     glTexCoord2f( 0, 1.0f);
     glVertex3f(0.0,1.0,0.0);
@@ -432,45 +429,66 @@ void draw_density()
     glTexCoord2f(1.0f,1.0f);
     glVertex3f(1.0,1.0,0.0);
   glEnd();
+
+  glutSwapBuffers();
+
+  // now handle looping and writing data
+  if (time_diff(time1,time2).tv_nsec > framerate_sec) {
+    if (togSimulate) {
+      if (writeData) {
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, fboPtr);
+        writeImage(outputImagePath, fboPtr, animFrameNum, win_x, win_y, internalFormat);
+      }
+      animFrameNum++;
+      clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
+      glutPostRedisplay(); // causes draw to loop forever
+    }
+  }
 }
 
-void draw_velocity()
-{
-	int i, j;
-	float x, y, h;
+void draw_density() {
+  glEnable(GL_TEXTURE_2D);
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
+  glBindTexture(GL_TEXTURE_2D, textureID);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
+  glBegin(GL_QUADS);
+    glTexCoord2f( 0, 1.0f);
+    glVertex3f(0.0,1.0,0.0);
+    glTexCoord2f(0,0);
+    glVertex3f(0.0,0.0,0.0);
+    glTexCoord2f(1.0f,0);
+    glVertex3f(1.0f,0.0,0.0);
+    glTexCoord2f(1.0f,1.0f);
+    glVertex3f(1.0,1.0,0.0);
+  glEnd();
 
-	h = (float)1.0f/float(N);
-
-  float *u_cpu = (float*)malloc(sizeof(float)*size);
-  float *v_cpu = (float*)malloc(sizeof(float)*size);
-  checkCudaErrors(cudaMemcpy(u_cpu, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-  checkCudaErrors(cudaMemcpy(v_cpu, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-
-  glDisable (GL_LIGHTING);
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
   glDisable(GL_TEXTURE_2D);
+}
 
-	glLineWidth ( .5f );
+void draw_velocity() {
+  glPushAttrib(GL_ENABLE_BIT);
+
+  glDisable(GL_LIGHTING);
+  glDisable(GL_TEXTURE_2D);
+	// glLineWidth ( 1.0f );
   glColor3f ( 1.0f, 1.0f, 1.0f );
 
-	glBegin ( GL_LINES );
-		for ( i=1 ; i<=N ; i+=4 ) {
-			x = (i-0.5f)*h;
-			for ( j=1 ; j<=N ; j+=4 ) {
-				y = (j-0.5f)*h;
-        int id = ((i)+(N+2)*(j));
-				glVertex2f ( x, y );
-				// glVertex2f ( u0_cpu[id], v0_cpu[id] );
-				// glVertex2f ( x+.05, y+0.05 );
-				glVertex2f ( x+u_cpu[id], y+v_cpu[id] );
-				// glVertex2f ( u_cpu[id], v_cpu[id] );
-        u0_cpu[id] = u_cpu[id];
-        v0_cpu[id] = v_cpu[id];
-			}
-		}
-	glEnd ();
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // glEnable( GL_LINE_SMOOTH );
+  // glHint( GL_LINE_SMOOTH_HINT, GL_NICEST );
+  // glHint( GL_POLYGON_SMpOOTH_HINT, GL_NICEST );
 
-  free(u_cpu);
-  free(v_cpu);
+  glBindBuffer(GL_ARRAY_BUFFER, vertexArrayID);
+  glEnableClientState( GL_VERTEX_ARRAY );
+  glVertexPointer(4, GL_FLOAT, sizeof(float4), 0);
+
+  glDrawArrays(GL_LINES, 0, numVertices);
+
+  glDisableClientState( GL_VERTEX_ARRAY );
+
+  glPopAttrib();
 }
 
 static void draw_func( void ) {
@@ -478,32 +496,10 @@ static void draw_func( void ) {
 
   pre_display();
 
-  // glEnable(GL_BLEND);
-  // glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  // glBlendEquation(GL_FUNC_ADD);
-
   if (togDensity) draw_density();
   if (togVelocity) draw_velocity();
 
-  // glDisable(GL_BLEND);
-
-  // particleSystem.updateAndDraw(u, v, size, float(DIM));
-
-  glutSwapBuffers();
-  glutPostRedisplay();
-
-  // float fr = 1.0f/60.0f;
-  // float df = float(time_diff(time1,time2).tv_nsec)/1000.0f;
-  // // cout<<time_diff(time1,time2).tv_sec<<":"<<time_diff(time1,time2).tv_nsec<<endl;
-  // if (time_diff(time1,time2).tv_nsec > fr) {
-  //   if (togSimulate) {
-  //     if (writeData) writeCpy(0,1,animFrameNum);
-  //     animFrameNum++;
-  //   }
-  //   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
-  //   glutPostRedisplay(); // causes draw to loop forever
-  // }
-  // glutPostRedisplay(); // causes draw to loop forever
+  post_display();
 
 }
 
@@ -513,14 +509,6 @@ static void draw_func( void ) {
 // Close
 ///////////////////////////////////////
 static void FreeResource( void ){
-  // checkCudaErrors(cudaFree(u));
-  // checkCudaErrors(cudaFree(u_prev));
-  // checkCudaErrors(cudaFree(v));
-  // checkCudaErrors(cudaFree(v_prev));
-  // checkCudaErrors(cudaFree(dens));
-  // checkCudaErrors(cudaFree(dens_prev));
-  // checkCudaErrors(cudaFree(source));
-  // checkCudaErrors(cudaFree(toDisplay));
   sdkDeleteTimer(&timer);
   glDeleteBuffers(1, &bufferObj);
 }
@@ -554,7 +542,7 @@ static void keyboard_func( unsigned char key, int x, int y ) {
         draw_func();
         break;
     case '.':
-        writeCpy();
+        // writeCpy();
         break;
     case ']':
         diff += 0.000001f;

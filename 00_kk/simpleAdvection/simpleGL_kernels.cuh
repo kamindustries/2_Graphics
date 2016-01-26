@@ -206,6 +206,30 @@ __global__ void ProjectFinish ( float *u, float *v, float *p, float *div ) {
   }
 }
 
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+__global__ void MakeColor( float *data, float4 *_toDisplay) {
+  int x = getX();
+  int y = getY();
+  int id = IX(x,y);
+
+  float Cd = data[id];
+  _toDisplay[id] = make_float4(Cd, Cd, Cd, 1.0);
+}
+
+__global__ void MakeColor( float *data0, float *data1, float4 *_toDisplay) {
+  int x = getX();
+  int y = getY();
+  int id = IX(x,y);
+
+  float R = (abs(data0[id]) + abs(data1[id]));
+  R = (R*R)*1000;
+  float G = R;
+  if (G < 0.001) G*= 1000.0;
+
+  _toDisplay[id] = make_float4(R, R, R, 1.0);
+}
+
 __global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
   int i = getX();
   int j = getY();
@@ -224,27 +248,4 @@ __global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
     _x[idVert+0] = make_float4(0.0,0.0,0.0,1.0);
     _x[idVert+1] = make_float4(0.0,0.0,0.0,1.0);
   }
-}
-
-// really dont like that i have to do this...
-//
-__global__ void MakeColor( float *data, float4 *_toDisplay) {
-  int x = getX();
-  int y = getY();
-  int id = IX(x,y);
-
-  float Cd = data[id];
-  _toDisplay[id] = make_float4(Cd, Cd, Cd, 1.0);
-}
-__global__ void MakeColor( float *data0, float *data1, float4 *_toDisplay) {
-  int x = getX();
-  int y = getY();
-  int id = IX(x,y);
-
-  float R = (abs(data0[id]) + abs(data1[id]));
-  R = (R*R)*1000;
-  float G = R;
-  if (G < 0.001) G*= 1000.0;
-
-  _toDisplay[id] = make_float4(R, R, R, 1.0);
 }
