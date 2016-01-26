@@ -51,7 +51,8 @@ static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
 bool togDensity = true;
-bool togVelocity = true;
+bool togVelocity = false;
+bool togParticles = true;
 bool togModBuoy = false;
 bool hasRunOnce = false;
 bool writeData = false;
@@ -233,8 +234,10 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
   // map mouse position to window size
-  i = (int)((mouse_x /(float)win_x)*N+1);
-	j = (int)(((win_y-mouse_y)/(float)win_y)*N+1);
+  float mx_f = (float)(mouse_x)/(float)win_x;
+  float my_f = (float)(win_y-mouse_y)/(float)win_y;
+  i = (int)(mx_f*N+1);
+	j = (int)(my_f*N+1);
 
   float x_diff = mouse_x-mouse_x_old;
   float y_diff = mouse_y_old-mouse_y;
@@ -245,12 +248,11 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
   if ( mouse_down[0] ) {
     GetFromUI<<<grid,threads>>>(_u, i, j, x_diff * force);
     GetFromUI<<<grid,threads>>>(_v, i, j, y_diff * force);
-
-    particleSystem.addParticles((float)mouse_x/float(win_x), (float)(win_y-mouse_y)/float(win_y), 10);
   }
 
   if ( mouse_down[2]) {
     GetFromUI<<<grid,threads>>>(_chemB, i, j, source_density);
+    particleSystem.addParticles(mx_f, my_f, 10);
   }
 
   mouse_x_old = mouse_x;
@@ -476,9 +478,9 @@ void draw_velocity() {
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-  // glEnable( GL_LINE_SMOOTH );
+  glEnable( GL_LINE_SMOOTH );
   // glHint( GL_LINE_SMOOTH_HINT, GL_NICEST );
-  // glHint( GL_POLYGON_SMpOOTH_HINT, GL_NICEST );
+  // glHint( GL_POLYGON_SMOOTH_HINT, GL_NICEST );
 
   glBindBuffer(GL_ARRAY_BUFFER, vertexArrayID);
   glEnableClientState( GL_VERTEX_ARRAY );
@@ -486,9 +488,14 @@ void draw_velocity() {
 
   glDrawArrays(GL_LINES, 0, numVertices);
 
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
   glDisableClientState( GL_VERTEX_ARRAY );
 
   glPopAttrib();
+}
+
+void draw_particles(){
+  particleSystem.updateAndDraw(u, v, size, float(win_x));
 }
 
 static void draw_func( void ) {
@@ -498,6 +505,7 @@ static void draw_func( void ) {
 
   if (togDensity) draw_density();
   if (togVelocity) draw_velocity();
+  if (togParticles) draw_particles();
 
   post_display();
 
@@ -568,12 +576,16 @@ static void keyboard_func( unsigned char key, int x, int y ) {
       togModBuoy = true;
       break;
     case 'v':
-      togVelocity = !togVelocity;
-      printf("toggle velocity: %d\n", togVelocity);
+      togVelocity = !togVelocity;p
+      printf("Show velocity: %d\n", togVelocity);
       break;
     case 'd':
       togDensity = !togDensity;
-      printf("toggle density: %d\n", togDensity);
+      printf("Show density: %d\n", togDensity);
+      break;
+    case 'f':
+      togParticles = !togParticles;
+      printf("Show particles: %d\n", togParticles);
       break;
     default:
         break;

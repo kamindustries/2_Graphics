@@ -24,14 +24,15 @@ public:
     checkCudaErrors(cudaMemcpy(u_cpu, _u, sizeof(float)*arraySize, cudaMemcpyDeviceToHost ));
     checkCudaErrors(cudaMemcpy(v_cpu, _v, sizeof(float)*arraySize, cudaMemcpyDeviceToHost ));
 
+    glDisable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);
-  	glDisable(GL_TEXTURE_2D);
-    glBlendFunc(GL_ONE,GL_ONE);
+    glBlendFunc(GL_SRC_COLOR,GL_ONE_MINUS_SRC_COLOR); // probably need to change this
     glLineWidth(1);
+    glColor3f ( 1.0f, 1.0f, 1.0f );
 
     for (int i = 0; i < MAX_PARTICLES; i++){
       if (particles[i].alpha > 0){
-        // particles[i].update(u_cpu, v_cpu, win_size);
+        particles[i].update(u_cpu, v_cpu, win_size);
         particles[i].updateVertexArrays(i, win_size, posArray, colArray);
       }
     }
@@ -42,7 +43,7 @@ public:
   	glEnableClientState(GL_COLOR_ARRAY);
   	glColorPointer(3, GL_FLOAT, 0, colArray);
 
-  	glDrawArrays(GL_LINES, 0, MAX_PARTICLES * 2);
+  	glDrawArrays(GL_POINTS, 0, MAX_PARTICLES * 2);
 
   	glDisableClientState(GL_VERTEX_ARRAY);
   	glDisableClientState(GL_COLOR_ARRAY);
@@ -53,17 +54,18 @@ public:
     free(u_cpu);
     free(v_cpu);
 
-
   }
+
   void addParticle(float x, float y){
-    particles[curIndex].init(x, y);
+    particles[curIndex].init(x, y, randNum);
     curIndex++;
     if (curIndex >= MAX_PARTICLES) curIndex = 0;
   }
   void addParticles(float x, float y, int count){
     for (int i = 0; i < count; i++){
-      // addParticle(x+(randNum.rand() * 5.0f), y+(randNum.rand() * 5.0f));
-      addParticle(x, y);
+      float rndx = (randNum.rand()*2.0)-1.0;
+      float rndy = (randNum.rand()*2.0)-1.0;
+      addParticle(x+(rndx * 0.02), y+(rndy * 0.02));
     }
   }
 
