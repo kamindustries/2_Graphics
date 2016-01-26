@@ -34,8 +34,6 @@ void writePNG(string _filename, float4* _img, int _width, int _height, int _stri
 
   png_structp png_ptr;
   png_infop info_ptr;
-  // png_byte color_type = (_stride > 3) ? PNG_COLOR_TYPE_RGB_ALPHA : PNG_COLOR_TYPE_RGB;
-  // png_byte color_type = PNG_COLOR_TYPE_RGB_ALPHA;
   png_byte color_type = PNG_COLOR_TYPE_RGB;
   png_byte bit_depth = 8;
 
@@ -63,6 +61,7 @@ void writePNG(string _filename, float4* _img, int _width, int _height, int _stri
   if (setjmp(png_jmpbuf(png_ptr)))
     printf("[write_png_file] Error during writing header\n");
 
+  png_set_compression_level(png_ptr, 7);
   png_set_IHDR(png_ptr, info_ptr, _width, _height,
        bit_depth, color_type, PNG_INTERLACE_NONE,
        PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);

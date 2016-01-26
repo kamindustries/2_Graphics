@@ -10,6 +10,7 @@
 #include <helper_functions.h>    // includes cuda.h and cuda_runtime_api.h
 #include <helper_cuda.h>         // helper functions for CUDA error check
 #include <helper_cuda_gl.h>
+#include <helper_timer.h>
 #include <thrust/device_ptr.h>
 #include <thrust/sort.h>
 #include <helper_math.h>
@@ -24,8 +25,6 @@ __device__ int IX( int x, int y) {
   if (x < 0) x = DIM-1;
   if (y >= DIM) y = 0;
   if (y < 0) y = DIM-1;
-
-  // return x + (y * blockDim.x * gridDim.x);
   return y * DIM + x;
 }
 
@@ -73,7 +72,7 @@ __global__ void DrawSquare( float *field ) {
   float posX = (float)x/DIM;
   float posY = (float)y/DIM;
   if ( posX < .75 && posX > .45 && posY < .51 && posY > .48 ) {
-    field[id] = 100.0;
+    field[id] = 1.0;
   }
 }
 
@@ -104,14 +103,6 @@ __global__ void GetFromUI ( float * field, int x_coord, int y_coord, float value
   }
   else return;
 }
-
-// __global__ void ClearThreeArrays ( float * d, float * u, float * v ) {
-//   int x = getX();
-//   int y = getY();
-//   int id = IX(x,y);
-//
-//   u[id] = v[id] = d[id] = 0.0;
-// }
 
 __global__ void InitVelocity ( float * field ) {
   int x = getX();
@@ -212,6 +203,26 @@ __global__ void ProjectFinish ( float *u, float *v, float *p, float *div ) {
   if (x>0 && x<DIM-1 && y>0 && y<DIM-1){
     u[id] -= (0.5 * float(N) * (p[IX(x+1,y)] - p[IX(x-1,y)]));
     v[id] -= (0.5 * float(N) * (p[IX(x,y+1)] - p[IX(x,y-1)]));
+  }
+}
+
+__global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
+  int i = getX();
+  int j = getY();
+  int id = IX(i,j);
+  int idVert = id*2;
+
+  float h = (float)1.0f/float(DIM);
+  float x = (float)(i - 0.5f) * h;
+  float y = (float)(j - 0.5f) * h;
+
+  if (i%4==0 && j%4==0) {
+    _x[idVert+0] = make_float4(x,y,0.0,1.0);
+    _x[idVert+1] = make_float4(x+_u[id],y+_v[id],0.0,1.0);
+  }
+  else {
+    _x[idVert+0] = make_float4(0.0,0.0,0.0,1.0);
+    _x[idVert+1] = make_float4(0.0,0.0,0.0,1.0);
   }
 }
 

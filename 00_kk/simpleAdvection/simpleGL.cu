@@ -13,16 +13,17 @@ int size = 0;
 int win_x = 512;
 int win_y = 512;
 int internalFormat = 4;
+int numVertices = DIM * DIM * 2;
 float dt = 0.1;
-float diff = 0.0001f;
+float diff = 0.00001f;
 float visc = 0.000f;
-float force = 1.0;
-float source_density = 100.0;
+float force = 5.0;p
+float source_density = 1.0;
 
-GLuint  bufferObj, bufferObj2;
-GLuint  textureID;
+GLuint  bufferObj;
+GLuint  textureID, vertexArrayID;
 GLuint FramebufferName, rndrTx, rndrDepthTx;
-cudaGraphicsResource_t resource1;
+cudaGraphicsResource_t resource1, vertResource;
 
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
@@ -36,7 +37,7 @@ timespec time1, time2;
 timespec time_diff(timespec start, timespec end);
 
 float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
-float4 *displayPtr, *rndrTx_ptr;
+float4 *displayPtr, *rndrTx_ptr, *displayVertPtr;
 float *h_u, *h_v, *h_d;
 
 bool hasRunOnce = false;
@@ -62,12 +63,14 @@ void initVariables(int argc, char *argv[]) {
   // grid = dim3(DIM/16,DIM/16);
   // threads = dim3(16,16);
 
+  // possibly works for non-powers of two?
   threads = dim3(16,16);
   grid.x = (DIM + threads.x - 1) / threads.x;
   grid.y = (DIM + threads.y - 1) / threads.y;
 
   size = (N+2)*(N+2);
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
+  displayVertPtr = (float4*)malloc(sizeof(float4)*numVertices);
   rndrTx_ptr = (float4*)malloc(sizeof(float4)*win_x*win_y);
   h_u = new float[size];
   h_v = new float[size];
@@ -104,8 +107,8 @@ void initGL(int argc, char *argv[]) {
   glGenTextures(1, &rndrTx);
   glBindTexture(GL_TEXTURE_2D, rndrTx);
   glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, win_x, win_y, 0, GL_RGBA, GL_FLOAT, 0);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glBindTexture(GL_TEXTURE_2D, 0);
 
   // The depth buffer
@@ -126,12 +129,21 @@ void initGL(int argc, char *argv[]) {
   glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, sizeof(float4) * DIM * DIM, NULL, GL_DYNAMIC_DRAW_ARB );
   glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, 0 );
 
+  // Vertex buffer
+  // Each vertex contains 3 floating point coordinates (x,y,z) and 4 color bytes (RGBA)
+  // total 16 bytes per vertex
+  glGenBuffers(1, &vertexArrayID);
+  glBindBuffer( GL_ARRAY_BUFFER, vertexArrayID);
+  glBufferData( GL_ARRAY_BUFFER, sizeof(float4)*numVertices, NULL, GL_DYNAMIC_DRAW_ARB );
+  glBindBuffer( GL_ARRAY_BUFFER, 0 );
+
   glGenTextures(1, &textureID);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexImage2D( GL_TEXTURE_2D, 0, GL_RGBA, DIM, DIM, 0, GL_BGRA, GL_FLOAT, NULL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glBindTexture(GL_TEXTURE_2D, 0);
+
 
   // Clean up
   glClearColor ( 0.0f, 0.0f, 0.0f, 1.0f );
@@ -143,8 +155,10 @@ void initGL(int argc, char *argv[]) {
 }
 
 void initCUDA() {
-  checkCudaErrors(cudaGLSetGLDevice( 0 ));
+  checkCudaErrors( cudaSetDevice(gpuGetMaxGflopsDeviceId()) );
+  checkCudaErrors( cudaGLSetGLDevice(gpuGetMaxGflopsDeviceId()) );
   cudaGraphicsGLRegisterBuffer( &resource1, bufferObj, cudaGraphicsMapFlagsWriteDiscard );
+  cudaGraphicsGLRegisterBuffer( &vertResource, vertexArrayID, cudaGraphicsMapFlagsWriteDiscard );
 
   checkCudaErrors(cudaMalloc((void**)&u, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&u_prev, sizeof(float)*size ));
@@ -204,8 +218,6 @@ void get_from_UI(float *d, float *u, float *v) {
 
   int i, j = (N+2)*(N+2);
 
-  // which is faster?
-  // ClearThreeArrays<<<grid,threads>>>(d, u, v);
   ClearArray<<<grid,threads>>>(d, 0.0);
   ClearArray<<<grid,threads>>>(u, 0.0);
   ClearArray<<<grid,threads>>>(v, 0.0);
@@ -309,13 +321,17 @@ static void simulate( void ){
     vel_step( u, v, u_prev, v_prev, visc, dt );
     dens_step( dens, dens_prev, u, v, diff, dt );
     MakeColor<<<grid,threads>>>(dens, displayPtr);
-    // MakeColor<<<grid,threads>>>(u, v, displayPtr);
+    MakeVerticesKernel<<<grid,threads>>>(displayVertPtr, u, v);
   }
 
   size_t  sizeT;
   cudaGraphicsMapResources( 1, &resource1, 0 );
   checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, resource1));
   checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
+
+  cudaGraphicsMapResources( 1, &vertResource, 0 );
+  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayVertPtr, &sizeT, vertResource));
+  checkCudaErrors(cudaGraphicsUnmapResources( 1, &vertResource, 0 ));
 
   sdkStopTimer(&timer);
   computeFPS();
@@ -371,11 +387,10 @@ static void post_display ( void ) {
 }
 
 void draw_density() {
-  glEnable (GL_TEXTURE_2D);
+  glEnable(GL_TEXTURE_2D);
   glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, bufferObj);
   glBindTexture(GL_TEXTURE_2D, textureID);
   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, DIM, DIM, GL_BGRA, GL_FLOAT, NULL);
-
   glBegin(GL_QUADS);
     glTexCoord2f( 0, 1.0f);
     glVertex3f(0.0,1.0,0.0);
@@ -386,31 +401,59 @@ void draw_density() {
     glTexCoord2f(1.0f,1.0f);
     glVertex3f(1.0,1.0,0.0);
   glEnd();
+
+  glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
+  glDisable(GL_TEXTURE_2D);
 }
 
 void draw_velocity() {
-	float h = (float)1.0f/float(N);
-
-  cudaDeviceSynchronize();
-  checkCudaErrors(cudaMemcpy(h_u, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-  checkCudaErrors(cudaMemcpy(h_v, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  glPushAttrib(GL_ENABLE_BIT);
 
   glDisable(GL_LIGHTING);
   glDisable(GL_TEXTURE_2D);
-	glLineWidth ( 1.0f );
+	// glLineWidth ( 1.0f );
   glColor3f ( 1.0f, 1.0f, 1.0f );
 
-	glBegin ( GL_LINES );
-		for ( int i=0 ; i<DIM ; i+=2 ) {
-			float x = (i-0.5f)*h;
-			for ( int j=0 ; j<DIM ; j+=2 ) {
-				float y = (j-0.5f)*h;
-        int id = ((i)+DIM*(j));
-  				glVertex2f ( x, y );
-  				glVertex2f ( x+h_u[id], y+h_v[id] );
-			}
-		}
-	glEnd ();
+  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // glEnable( GL_LINE_SMOOTH );
+  // glHint( GL_LINE_SMOOTH_HINT, GL_NICEST );
+  // glHint( GL_POLYGON_SMpOOTH_HINT, GL_NICEST );
+
+  glBindBuffer(GL_ARRAY_BUFFER, vertexArrayID);
+  glEnableClientState( GL_VERTEX_ARRAY );
+  glVertexPointer(4, GL_FLOAT, sizeof(float4), 0);
+
+  glDrawArrays(GL_LINES, 0, numVertices);
+
+  glDisableClientState( GL_VERTEX_ARRAY );
+
+  glPopAttrib();
+	// float h = (float)1.0f/floatasfdz(N);
+  //
+  // // cudaDeviceSynchronize();
+  // checkCudaErrors(cudaMemcpy(h_u, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  // checkCudaErrors(cudaMemcpy(h_v, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
+  //
+  // glDisable(GL_LIGHTING);
+  // glDisable(GL_TEXTURE_2D);
+	// glLineWidth ( 1.0f );
+  // glColor3f ( 1.0f, 1.0f, 1.0f );
+  //
+	// glBegin ( GL_LINES );
+	// 	for ( int i=0 ; i<DIM ; i+=1 ) {
+	// 		float x = (i-0.5f)*h;
+	// 		for ( int j=0 ; j<DIM ; j+=1 ) {
+	// 			float y = (j-0.5f)*h;
+  //       int id = ((i)+DIM*(j));
+  // 				glVertex2f ( x, y );
+  // 				glVertex2f ( x+h_u[id], y+h_v[id] );
+	// 		}
+	// 	}
+	// glEnd ();
+
+
+
 }
 
 static void draw_func( void ) {
