@@ -17,13 +17,16 @@ int numVertices = DIM * DIM * 2;
 float dt = 0.1;
 float diff = 0.00001f;
 float visc = 0.000f;
-float force = 5.0;p
+float force = 5.0;
 float source_density = 1.0;
 
 GLuint  bufferObj;
 GLuint  textureID, vertexArrayID;
-GLuint FramebufferName, rndrTx, rndrDepthTx;
-cudaGraphicsResource_t resource1, vertResource;
+GLuint fboID, fboTxID, fboDepthTxID;
+cudaGraphicsResource_t cgrTxData, cgrVertData;
+
+float *u, *v, *u_prev, *v_prev, *dens, *dens_prev;
+float4 *displayPtr, *fboPtr, *displayVertPtr;
 
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
@@ -36,22 +39,14 @@ StopWatchInterface *timer = NULL;
 timespec time1, time2;
 timespec time_diff(timespec start, timespec end);
 
-float *u, *v, *u_prev, *v_prev, *source, *dens, *dens_prev;
-float4 *displayPtr, *rndrTx_ptr, *displayVertPtr;
-float *h_u, *h_v, *h_d;
-
-bool hasRunOnce = false;
-bool writeData = false;
-
 // mouse controls
 static int mouse_down[3];
 int mouse_x, mouse_y, mouse_x_old, mouse_y_old;
 bool togSimulate = false;
-int max_simulate = 0;
 bool togDensity = true;
 bool togVelocity = true;
-
-int ID(int i, int j) { return (i+((N+2)*j)); }
+bool hasRunOnce = false;
+bool writeData = false;
 
 // Convert to webm:
 // png2yuv -I p -f 60 -b 1 -n 1628 -j cuda_x%05d.png > cuda_YUV.yuv
@@ -68,18 +63,10 @@ void initVariables(int argc, char *argv[]) {
   grid.x = (DIM + threads.x - 1) / threads.x;
   grid.y = (DIM + threads.y - 1) / threads.y;
 
-  size = (N+2)*(N+2);
+  size = DIM*DIM;p
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
   displayVertPtr = (float4*)malloc(sizeof(float4)*numVertices);
-  rndrTx_ptr = (float4*)malloc(sizeof(float4)*win_x*win_y);
-  h_u = new float[size];
-  h_v = new float[size];
-  h_d = new float[size];
-  for (int i=0; i<size; i++){
-    h_u[i] = 0.0;
-    h_v[i] = 0.0;
-    h_d[i] = 0.0;
-  }
+  fboPtr = (float4*)malloc(sizeof(float4)*win_x*win_y);
 
   writeData = argv[1];
 
@@ -99,24 +86,24 @@ void initGL(int argc, char *argv[]) {
   glewInit();
 
   // Framebuffer
-  glGenFramebuffersEXT(1, &FramebufferName);
-  glBindFramebufferEXT(GL_FRAMEBUFFER, FramebufferName);
+  glGenFramebuffersEXT(1, &fboID);
+  glBindFramebufferEXT(GL_FRAMEBUFFER, fboID);
 
   // Framebuffer's texture
   glEnable(GL_TEXTURE_2D);
-  glGenTextures(1, &rndrTx);
-  glBindTexture(GL_TEXTURE_2D, rndrTx);
+  glGenTextures(1, &fboTxID);
+  glBindTexture(GL_TEXTURE_2D, fboTxID);
   glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, win_x, win_y, 0, GL_RGBA, GL_FLOAT, 0);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glBindTexture(GL_TEXTURE_2D, 0);
 
   // The depth buffer
-  glGenRenderbuffersEXT(1, &rndrDepthTx);
-  glBindRenderbufferEXT(GL_RENDERBUFFER, rndrDepthTx);
+  glGenRenderbuffersEXT(1, &fboDepthTxID);
+  glBindRenderbufferEXT(GL_RENDERBUFFER, fboDepthTxID);
   glRenderbufferStorageEXT(GL_RENDERBUFFER, GL_DEPTH_COMPONENT, win_x, win_y);
-  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rndrDepthTx);
-  glFramebufferTextureEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, rndrTx, 0);
+  glFramebufferRenderbufferEXT(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fboDepthTxID);
+  glFramebufferTextureEXT(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, fboTxID, 0);
 
   // Set the list of draw buffers.
   GLenum DrawBuffers[1] = {GL_COLOR_ATTACHMENT0};
@@ -157,8 +144,8 @@ void initGL(int argc, char *argv[]) {
 void initCUDA() {
   checkCudaErrors( cudaSetDevice(gpuGetMaxGflopsDeviceId()) );
   checkCudaErrors( cudaGLSetGLDevice(gpuGetMaxGflopsDeviceId()) );
-  cudaGraphicsGLRegisterBuffer( &resource1, bufferObj, cudaGraphicsMapFlagsWriteDiscard );
-  cudaGraphicsGLRegisterBuffer( &vertResource, vertexArrayID, cudaGraphicsMapFlagsWriteDiscard );
+  cudaGraphicsGLRegisterBuffer( &cgrTxData, bufferObj, cudaGraphicsMapFlagsWriteDiscard );
+  cudaGraphicsGLRegisterBuffer( &cgrVertData, vertexArrayID, cudaGraphicsMapFlagsWriteDiscard );
 
   checkCudaErrors(cudaMalloc((void**)&u, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&u_prev, sizeof(float)*size ));
@@ -166,10 +153,6 @@ void initCUDA() {
   checkCudaErrors(cudaMalloc((void**)&v_prev, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&dens, sizeof(float)*size ));
   checkCudaErrors(cudaMalloc((void**)&dens_prev, sizeof(float)*size ));
-  checkCudaErrors(cudaMalloc((void**)&source, sizeof(float)*size ));
-
-  checkCudaErrors(cudaMemcpy(u, h_u, sizeof(float)*size, cudaMemcpyHostToDevice));
-  checkCudaErrors(cudaMemcpy(v, h_v, sizeof(float)*size, cudaMemcpyHostToDevice));
 }
 
 void initArrays() {
@@ -325,13 +308,13 @@ static void simulate( void ){
   }
 
   size_t  sizeT;
-  cudaGraphicsMapResources( 1, &resource1, 0 );
-  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, resource1));
-  checkCudaErrors(cudaGraphicsUnmapResources( 1, &resource1, 0 ));
+  cudaGraphicsMapResources( 1, &cgrTxData, 0 );
+  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayPtr, &sizeT, cgrTxData));
+  checkCudaErrors(cudaGraphicsUnmapResources( 1, &cgrTxData, 0 ));
 
-  cudaGraphicsMapResources( 1, &vertResource, 0 );
-  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayVertPtr, &sizeT, vertResource));
-  checkCudaErrors(cudaGraphicsUnmapResources( 1, &vertResource, 0 ));
+  cudaGraphicsMapResources( 1, &cgrVertData, 0 );
+  checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void**)&displayVertPtr, &sizeT, cgrVertData));
+  checkCudaErrors(cudaGraphicsUnmapResources( 1, &cgrVertData, 0 ));
 
   sdkStopTimer(&timer);
   computeFPS();
@@ -342,7 +325,7 @@ static void simulate( void ){
 ///////////////////////////////////////////////////////////////////////////////
 static void pre_display ( void ) {
   // bind a framebuffer and render everything afterwards into that
-  glBindFramebufferEXT(GL_FRAMEBUFFER, FramebufferName);
+  glBindFramebufferEXT(GL_FRAMEBUFFER, fboID);
   glViewport ( 0, 0, win_x, win_y );
   glMatrixMode ( GL_PROJECTION );
   glLoadIdentity ();
@@ -357,7 +340,7 @@ static void post_display ( void ) {
 
   glColor3f(1,1,1);
   glEnable(GL_TEXTURE_2D);
-  glBindTexture(GL_TEXTURE_2D, rndrTx);
+  glBindTexture(GL_TEXTURE_2D, fboTxID);
   glBegin(GL_QUADS);
     glTexCoord2f( 0, 1.0f);
     glVertex3f(0.0,1.0,0.0);
@@ -375,9 +358,8 @@ static void post_display ( void ) {
   if (time_diff(time1,time2).tv_nsec > framerate_sec) {
     if (togSimulate) {
       if (writeData) {
-        // glReadPixels(0, 0, win_x, win_y, GL_RGBA, GL_FLOAT, rndrTx_ptr);
-        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, rndrTx_ptr);
-        writeImage(rndrTx_ptr, animFrameNum, win_x, win_y, internalFormat);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_FLOAT, fboPtr);
+        writeImage(fboPtr, animFrameNum, win_x, win_y, internalFormat);
       }
       animFrameNum++;
       clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &time1);
@@ -429,31 +411,6 @@ void draw_velocity() {
   glDisableClientState( GL_VERTEX_ARRAY );
 
   glPopAttrib();
-	// float h = (float)1.0f/floatasfdz(N);
-  //
-  // // cudaDeviceSynchronize();
-  // checkCudaErrors(cudaMemcpy(h_u, u, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-  // checkCudaErrors(cudaMemcpy(h_v, v, sizeof(float)*size, cudaMemcpyDeviceToHost ));
-  //
-  // glDisable(GL_LIGHTING);
-  // glDisable(GL_TEXTURE_2D);
-	// glLineWidth ( 1.0f );
-  // glColor3f ( 1.0f, 1.0f, 1.0f );
-  //
-	// glBegin ( GL_LINES );
-	// 	for ( int i=0 ; i<DIM ; i+=1 ) {
-	// 		float x = (i-0.5f)*h;
-	// 		for ( int j=0 ; j<DIM ; j+=1 ) {
-	// 			float y = (j-0.5f)*h;
-  //       int id = ((i)+DIM*(j));
-  // 				glVertex2f ( x, y );
-  // 				glVertex2f ( x+h_u[id], y+h_v[id] );
-	// 		}
-	// 	}
-	// glEnd ();
-
-
-
 }
 
 static void draw_func( void ) {
