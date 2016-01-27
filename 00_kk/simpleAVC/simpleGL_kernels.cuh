@@ -184,7 +184,8 @@ __global__ void buoyancy(float *Fbuoy, float *dens, float _Tamb, float Y)
   int x = getX();
   int y = getY();
   int id = IX(x,y);
-  float a = 0.000625f;
+  // float a = 0.000625f;
+  float a = Y * 0.00625f;
   // float b = 0.025f;
   float b = 0.01f;
   Fbuoy[id] = a * dens[id] + -b * (dens[id] - _Tamb) * Y;
@@ -402,7 +403,7 @@ __global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
   int i = getX();
   int j = getY();
   int id = IX(i,j);
-  int idVert = id*2;
+  int idVert = (id*2)/4;
 
   float h = (float)1.0f/float(DIM);
   float x = (float)(i - 0.5f) * h;
@@ -412,8 +413,8 @@ __global__ void MakeVerticesKernel( float4 *_x, float *_u, float *_v) {
     _x[idVert+0] = make_float4(x,y,0.0,1.0);
     _x[idVert+1] = make_float4(x+_u[id],y+_v[id],0.0,1.0);
   }
-  else {
-    _x[idVert+0] = make_float4(0.0,0.0,0.0,1.0);
-    _x[idVert+1] = make_float4(0.0,0.0,0.0,1.0);
-  }
+  // else {
+  //   _x[idVert+0] = make_float4(0.0,0.0,0.0,1.0);
+  //   _x[idVert+1] = make_float4(0.0,0.0,0.0,1.0);
+  // }
 }

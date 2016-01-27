@@ -13,7 +13,7 @@ dim3 grid, threads;
 int size = 0;
 int win_x = 512;
 int win_y = 512;
-int numVertices = DIM * DIM * 2;
+int numVertices = (DIM * DIM * 2) / 4; // denominator is stride
 int internalFormat = 4;
 
 float dt = 0.1;
@@ -576,7 +576,7 @@ static void keyboard_func( unsigned char key, int x, int y ) {
       togModBuoy = true;
       break;
     case 'v':
-      togVelocity = !togVelocity;p
+      togVelocity = !togVelocity;
       printf("Show velocity: %d\n", togVelocity);
       break;
     case 'd':
