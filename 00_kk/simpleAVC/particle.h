@@ -22,14 +22,15 @@ public:
     fluid_force = 5.0;
   }
 
-  void update(float *u, float *v, float windowSize) {
+  void update(float *u, float *v, float windowSize, int fieldSizeX, int fieldSizeY) {
     if (alpha < 0.0001) return;
 
-    int px = floor(posX * 510);
-    int py = floor(posY * 510);
+    int px = floor(posX * 512);
+    int py = floor(posY * 512);
 
     int id = ((px) + (512) * (py));
-    if (id > 512*512) id = (512*512) - 1;
+    if (id >= (512*512)-2) id = (512*512) - 2;
+    if (id <= 1) id = 1;
 
     float h = 10.0f/windowSize; // not sure why i have to crank up to 10...
     velX = u[id] * (mass * fluid_force) * h + velX * momentum;
@@ -61,8 +62,6 @@ public:
   	int vi = i * 4;
       posBuffer[vi++] = posX - velX;
     	posBuffer[vi++] = posY - velY;
-      // posBuffer[vi++] = posX - velX;
-      // posBuffer[vi++] = posY - velY;
     	posBuffer[vi++] = posX;
     	posBuffer[vi++] = posY;
 

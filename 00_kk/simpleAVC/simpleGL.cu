@@ -20,11 +20,11 @@ float dt = 0.1;
 float diff = 0.00001f;
 float visc = 0.000f;
 float force = 5.0;
-float buoy = 0.0;
+float buoy;
 float source_density = 5.0;
 float dA = 0.0002; // diffusion constants
 float dB = 0.00001;
-const char *outputImagePath = "data/images/test/test.";
+const char *outputImagePath = "data/images/pt01/pt01.";
 
 GLuint  bufferObj;
 GLuint  textureID, vertexArrayID;
@@ -33,7 +33,8 @@ cudaGraphicsResource_t cgrTxData, cgrVertData;
 
 float *u, *v, *u_prev, *v_prev, *dens, *dens_prev;
 float *chemA, *chemA_prev, *chemB, *chemB_prev, *laplacian;
-float4 *displayPtr, *displayVertPtr, *fboPtr;
+float4 *displayPtr, *fboPtr;
+float2 *displayVertPtr;
 
 float avgFPS = 0.0f;
 int fpsCount = 0;        // FPS count for averaging
@@ -60,9 +61,10 @@ bool writeData = false;
 
 ParticleSystem particleSystem;
 
-// Convert to webm:
+// Convert to webm/mp4:
 // png2yuv -I p -f 60 -b 1 -n 1628 -j cuda_x%05d.png > cuda_YUV.yuv
 // vpxenc --good --cpu-used=0 --auto-alt-ref=1 --lag-in-frames=16 --end-usage=vbr --passes=2 --threads=2 --target-bitrate=3000 -o cuda_WEBM.webm cuda_YUV.yuv
+// ffmpeg -i pt01.%05d.png -vcodec libx264 -b:v 1500k -r 60 pt01_MP4.mp4
 ///////////////////////////////////////////////////////////////////////////////
 // Initialize Variables
 ///////////////////////////////////////////////////////////////////////////////
@@ -77,7 +79,7 @@ void initVariables(int argc, char *argv[]) {
 
   size = DIM*DIM;
   displayPtr = (float4*)malloc(sizeof(float4)*DIM*DIM);
-  displayVertPtr = (float4*)malloc(sizeof(float4)*numVertices);
+  displayVertPtr = (float2*)malloc(sizeof(float2)*numVertices);
   fboPtr = (float4*)malloc(sizeof(float4)*win_x*win_y);
 
   writeData = argv[1];
@@ -185,6 +187,12 @@ void initArrays() {
   ClearArray<<<grid,threads>>>(chemB, 0.0);
   ClearArray<<<grid,threads>>>(chemB_prev, 0.0);
   ClearArray<<<grid,threads>>>(laplacian, 0.0);
+
+  buoy = 0.0;
+}
+
+void reset() {
+  initArrays();
 }
 
 void computeFPS() {
@@ -196,7 +204,6 @@ void computeFPS() {
     fpsCount = 0;
     fpsLimit = (int)MAX(avgFPS, 1.f);
 
-    sdkResetTimer(&timer);
   }
 
   char fps[256];
@@ -229,7 +236,7 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
   ClearArray<<<grid,threads>>>(_u, 0.0);
   ClearArray<<<grid,threads>>>(_v, 0.0);
 
-  DrawSquare<<<grid,threads>>>(_chemB, 1.0);
+  // DrawSquare<<<grid,threads>>>(_chemB, 1.0);
 
   if ( !mouse_down[0] && !mouse_down[2] ) return;
 
@@ -252,7 +259,7 @@ void get_from_UI(float *_chemA, float *_chemB, float *_u, float *_v) {
 
   if ( mouse_down[2]) {
     GetFromUI<<<grid,threads>>>(_chemB, i, j, source_density);
-    particleSystem.addParticles(mx_f, my_f, 10);
+    particleSystem.addParticles(mx_f, my_f, 100, .04);
   }
 
   mouse_x_old = mouse_x;
@@ -348,7 +355,7 @@ void vel_step ( float *u, float *v, float *u0, float *v0, float *dens, float vis
 
   // add in buoyancy force
   // get average temperature
-  float Tamb = 0;
+  float Tamb = 0.0;
     getSum<<<grid,threads>>>(v0, Tamb);
     Tamb /= (DIM * DIM);
   buoyancy<<<grid,threads>>>(v0, dens, Tamb, buoy);
@@ -473,18 +480,17 @@ void draw_velocity() {
 
   glDisable(GL_LIGHTING);
   glDisable(GL_TEXTURE_2D);
-	// glLineWidth ( 1.0f );
+	glLineWidth ( 1.0f );
   glColor3f ( 1.0f, 1.0f, 1.0f );
 
   glEnable(GL_BLEND);
   glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  // glBlendFunc(GL_ONE,GL_ONE);
   glEnable( GL_LINE_SMOOTH );
-  // glHint( GL_LINE_SMOOTH_HINT, GL_NICEST );
-  // glHint( GL_POLYGON_SMOOTH_HINT, GL_NICEST );
 
   glBindBuffer(GL_ARRAY_BUFFER, vertexArrayID);
   glEnableClientState( GL_VERTEX_ARRAY );
-  glVertexPointer(4, GL_FLOAT, sizeof(float4), 0);
+  glVertexPointer(2, GL_FLOAT, 0, 0);
 
   glDrawArrays(GL_LINES, 0, numVertices);
 
@@ -495,7 +501,7 @@ void draw_velocity() {
 }
 
 void draw_particles(){
-  particleSystem.updateAndDraw(u, v, size, float(win_x));
+  particleSystem.updateAndDraw(u, v, size, float(win_x), DIM, DIM);
 }
 
 static void draw_func( void ) {
@@ -537,7 +543,7 @@ static void keyboard_func( unsigned char key, int x, int y ) {
         exit(0);
         break;
     case 'c':
-        initArrays();
+        reset();
         break;
     case ' ':
         draw_func();
@@ -616,7 +622,8 @@ void passive_motion_func(int x, int y) {
     float j = (float)((mouse_y /(float)win_y));
 
     // buoy = j;
-    buoy = ((j*j)-0.5) * 2.0;
+    buoy = (j-0.5) * 2.0;
+    if (abs(buoy) < 0.05) buoy = 0.0;
   }
 
 }

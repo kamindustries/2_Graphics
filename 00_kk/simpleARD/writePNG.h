@@ -39,6 +39,7 @@ void writePNG(string _filename, float4* _img, int _width, int _height) {
   png_infop info_ptr;
   png_byte color_type = PNG_COLOR_TYPE_RGB;
   png_byte bit_depth = 8;
+  png_set_compression_level(png_ptr, Z_BEST_COMPRESSION);
 
   // create file
   FILE *fp = fopen(_filename.c_str(), "wb");
